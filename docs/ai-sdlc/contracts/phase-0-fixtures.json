@@ -1,0 +1,111 @@
+{
+  "status": "draft",
+  "purpose": "Initial Phase 0 contract fixtures for future automated tests",
+  "owners": [
+    {
+      "owner_id": "00000000-0000-0000-0000-000000000001",
+      "email": "owner-a@example.test"
+    },
+    {
+      "owner_id": "00000000-0000-0000-0000-000000000002",
+      "email": "owner-b@example.test"
+    }
+  ],
+  "assistants": [
+    {
+      "assistant_id": "10000000-0000-0000-0000-000000000001",
+      "owner_id": "00000000-0000-0000-0000-000000000001",
+      "name": "Support Assistant A",
+      "state": "draft",
+      "fallback_message": "I cannot find that answer in the provided information."
+    },
+    {
+      "assistant_id": "10000000-0000-0000-0000-000000000002",
+      "owner_id": "00000000-0000-0000-0000-000000000002",
+      "name": "Support Assistant B",
+      "state": "draft",
+      "fallback_message": "I cannot find that answer in the provided information."
+    }
+  ],
+  "knowledge_files": [
+    {
+      "knowledge_file_id": "20000000-0000-0000-0000-000000000001",
+      "assistant_id": "10000000-0000-0000-0000-000000000001",
+      "owner_id": "00000000-0000-0000-0000-000000000001",
+      "filename": "faq.pdf",
+      "content_type": "application/pdf",
+      "size_bytes": 1048576,
+      "processing_state": "ready"
+    }
+  ],
+  "published_snapshots": [
+    {
+      "published_snapshot_id": "30000000-0000-0000-0000-000000000001",
+      "assistant_id": "10000000-0000-0000-0000-000000000001",
+      "owner_id": "00000000-0000-0000-0000-000000000001",
+      "public_assistant_id": "pub_assistant_a_v1_example",
+      "state": "active"
+    }
+  ],
+  "cases": [
+    {
+      "id": "owner_isolation",
+      "given": "owner-a is authenticated",
+      "when": "owner-a requests owner-b's assistant",
+      "expect": "safe not-found or unauthorized result and no data disclosure",
+      "requirements": ["FR-001", "AC-002"]
+    },
+    {
+      "id": "knowledge_limits",
+      "given": "an assistant already has five knowledge files",
+      "when": "a sixth file is uploaded",
+      "expect": "upload rejected and no new file association",
+      "requirements": ["FR-003", "AC-004"],
+      "architecture_decisions": ["ADR-003"]
+    },
+    {
+      "id": "file_size_limit",
+      "given": "a PDF or DOCX larger than 10 MB",
+      "when": "it is uploaded",
+      "expect": "upload rejected before processing",
+      "requirements": ["FR-003", "AC-004"],
+      "architecture_decisions": ["ADR-003"]
+    },
+    {
+      "id": "safe_processing_failure",
+      "given": "a malformed, encrypted, scanned, empty, or unsupported document",
+      "when": "processing runs",
+      "expect": "processing_state is failed and no chunks are retrievable",
+      "requirements": ["FR-003", "AC-004", "AC-017"],
+      "architecture_decisions": ["ADR-003"]
+    },
+    {
+      "id": "optional_playground",
+      "given": "an unpublished assistant with valid saved configuration",
+      "when": "the owner publishes without using the playground",
+      "expect": "publish succeeds",
+      "requirements": ["FR-004", "FR-006", "AC-010"]
+    },
+    {
+      "id": "draft_public_isolation",
+      "given": "an active published snapshot and later draft changes",
+      "when": "a public visitor sends a message before publish/update",
+      "expect": "the response uses the previous active snapshot",
+      "requirements": ["FR-010", "AC-015"]
+    },
+    {
+      "id": "fallback_boundary",
+      "given": "no retrieved chunk passes the configured similarity boundary",
+      "when": "a visitor asks a question",
+      "expect": "the configured fallback is returned and no business-specific answer is generated",
+      "requirements": ["FR-005", "AC-017"]
+    },
+    {
+      "id": "public_identifier_boundary",
+      "given": "the widget has an opaque public assistant identifier",
+      "when": "it sends a public chat request",
+      "expect": "only the active published snapshot is used and draft/owner data is not returned",
+      "requirements": ["FR-008", "AC-012"]
+    }
+  ]
+}
