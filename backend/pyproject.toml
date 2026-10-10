@@ -5,7 +5,7 @@ description = "AI Assistant Builder backend"
 requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.14,<2",
-  "fastapi>=0.115,<1",
+  "fastapi>=0.121,<1",
   "httpx>=0.28,<1",
   "psycopg[binary]>=3.2,<4",
   "pydantic-settings>=2.6,<3",

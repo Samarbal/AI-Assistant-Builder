@@ -1,7 +1,8 @@
 from collections.abc import Generator
 
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
+from fastapi import Request, HTTPException
 
 from .config import get_settings
 
@@ -13,12 +14,11 @@ def create_database_engine() -> Engine:
     return create_engine(database_url, pool_pre_ping=True)
 
 
-def get_db_session() -> Generator[Session, None, None]:
-    engine = create_database_engine()
-    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-    with session_factory() as session:
-        try:
-            yield session
-        except Exception:
-            session.rollback()
-            raise
+def get_db_session(request: Request) -> Generator[Session, None, None]:
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        raise HTTPException(503, "Database unavailable")
+    # begin commits on success, rolls back on failure, and closes the session.
+    # The caller must use function scope so commit precedes the HTTP response.
+    with session_factory.begin() as session:
+        yield session

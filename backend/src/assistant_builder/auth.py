@@ -3,7 +3,7 @@ from typing import Protocol
 from uuid import UUID
 
 import httpx
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,14 @@ class AuthVerifier(Protocol):
         """Validate a Supabase Auth session and return its user UUID."""
 
 
+class InvalidAuthentication(Exception):
+    pass
+
+
+class AuthenticationUnavailable(Exception):
+    pass
+
+
 class SupabaseAuthVerifier:
     """Validates bearer sessions through Supabase Auth's user endpoint."""
 
@@ -25,16 +33,24 @@ class SupabaseAuthVerifier:
         self.client = client or httpx.Client(timeout=5.0)
 
     def verify(self, authorization: str) -> OwnerContext:
-        if not authorization.lower().startswith("bearer "):
-            raise ValueError("Bearer authorization required")
-        response = self.client.get(
-            self.user_url,
-            headers={"Authorization": authorization, "apikey": self.anon_key},
-        )
+        parts = authorization.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise InvalidAuthentication()
+        try:
+            response = self.client.get(
+                self.user_url,
+                headers={"Authorization": f"Bearer {parts[1]}", "apikey": self.anon_key},
+            )
+        except httpx.RequestError as exc:
+            raise AuthenticationUnavailable() from exc
+        if response.status_code in (401, 403):
+            raise InvalidAuthentication()
         if response.status_code != 200:
-            raise ValueError("Supabase session rejected")
-        user_id = response.json().get("id")
-        return OwnerContext(owner_id=UUID(user_id))
+            raise AuthenticationUnavailable()
+        try:
+            return OwnerContext(owner_id=UUID(response.json()["id"]))
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise AuthenticationUnavailable() from exc
 
 
 def get_current_owner(
@@ -42,12 +58,16 @@ def get_current_owner(
     authorization: str | None = Header(default=None),
 ) -> OwnerContext:
     verifier: AuthVerifier | None = getattr(request.app.state, "auth_verifier", None)
-    if verifier is None or authorization is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    if authorization is None:
+        raise HTTPException(401, "Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    if verifier is None:
+        raise HTTPException(503, "Authentication service unavailable")
     try:
         return verifier.verify(authorization)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication") from exc
+    except InvalidAuthentication as exc:
+        raise HTTPException(401, "Invalid authentication", headers={"WWW-Authenticate": "Bearer"}) from exc
+    except AuthenticationUnavailable as exc:
+        raise HTTPException(503, "Authentication service unavailable") from exc
 
 
 CurrentOwner = Depends(get_current_owner)

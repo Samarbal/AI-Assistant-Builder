@@ -1,5 +1,3 @@
-from collections.abc import Generator
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -13,8 +11,8 @@ from .services import AssistantNotFound, AssistantService
 router = APIRouter(prefix="/assistants", tags=["assistants"])
 
 
-def get_assistant_service(session: Session = Depends(get_db_session)) -> Generator[AssistantService, None, None]:
-    yield AssistantService(AssistantRepository(session))
+def get_assistant_service(session: Session = Depends(get_db_session, scope="function")) -> AssistantService:
+    return AssistantService(AssistantRepository(session))
 
 
 @router.post("", response_model=AssistantRead, status_code=status.HTTP_201_CREATED)

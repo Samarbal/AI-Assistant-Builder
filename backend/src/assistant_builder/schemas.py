@@ -2,7 +2,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AssistantFields(BaseModel):
@@ -23,6 +23,13 @@ class AssistantCreate(AssistantFields):
 class AssistantUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def reject_explicit_null(cls, value):
+        if value is None:
+            raise ValueError("Field cannot be null; omit it to keep the current value")
+        return value
+
     name: str | None = Field(default=None, min_length=1, max_length=120)
     role: str | None = Field(default=None, min_length=1, max_length=500)
     colors: dict[str, str] | None = None
@@ -39,4 +46,3 @@ class AssistantRead(AssistantFields):
     state: str
     created_at: datetime
     updated_at: datetime
-
