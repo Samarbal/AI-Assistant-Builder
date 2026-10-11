@@ -1,88 +1,156 @@
-"""PostgreSQL checks. Never print DSNs or assume Supabase JWT context."""
+"""Explicit opt-in, loopback-only PostgreSQL integration tests. Never use .env."""
 import os
-from uuid import UUID, uuid4
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete, select, text
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 
 from assistant_builder.auth import OwnerContext, get_current_owner
-from assistant_builder.config import get_settings
+from assistant_builder.db import set_owner_identity, validate_runtime_role
 from assistant_builder.main import create_app
-from assistant_builder.models import Assistant
+from assistant_builder.repositories import AssistantRepository
+from assistant_builder.schemas import AssistantCreate
 from .test_phase1_contracts import payload
 
 
-def connect_engine(url):
-    engine = create_engine(url, connect_args={"connect_timeout": 5}, hide_parameters=True)
-    unavailable = False
+@pytest.fixture(scope="module")
+def postgres():
+    if os.getenv("PHASE1_LOCAL_PG_TESTS") != "1":
+        pytest.skip("Local PostgreSQL tests disabled; set PHASE1_LOCAL_PG_TESTS=1 and dedicated local URLs")
+    admin_url = os.getenv("PHASE1_LOCAL_MIGRATION_URL")
+    runtime_url = os.getenv("PHASE1_LOCAL_RUNTIME_URL")
+    for url in (admin_url, runtime_url):
+        if not url:
+            pytest.fail("Both dedicated local PostgreSQL URLs are required", pytrace=False)
+        parsed = make_url(url)
+        if parsed.host not in ("localhost", "127.0.0.1", "::1") or parsed.database != "assistant_builder_phase1_test" or parsed.query:
+            pytest.fail("Use loopback, database assistant_builder_phase1_test, and no URL query overrides", pytrace=False)
+    admin = create_engine(admin_url, hide_parameters=True, connect_args={"connect_timeout": 5})
+    runtime = create_engine(runtime_url, hide_parameters=True, pool_size=1, max_overflow=0, connect_args={"connect_timeout": 5})
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception:
-        engine.dispose()
-        unavailable = True
-    if unavailable:
-        pytest.fail("Configured PostgreSQL connection unavailable; connection details suppressed", pytrace=False)
-    return engine
-
-
-def test_configured_runtime_role_rls_prerequisites():
-    url = get_settings().database_url
-    if not url:
-        pytest.skip("DATABASE_URL unavailable: runtime role audit blocked")
-    engine = connect_engine(url)
-    try:
-        with engine.connect() as conn:
-            role = conn.execute(text("""
-                SELECT r.rolsuper, r.rolbypassrls,
-                       pg_has_role(current_user, c.relowner, 'USAGE') AS owns_table,
-                       c.relrowsecurity, c.relforcerowsecurity
-                FROM pg_roles r CROSS JOIN pg_class c
-                WHERE r.rolname = current_user AND c.oid = to_regclass('public.assistants')
-            """)).mappings().one_or_none()
-            assert role is not None, "Runtime assistants table unavailable"
-            assert not role["rolsuper"], "Runtime role is superuser: RLS bypass"
-            assert not role["rolbypassrls"], "Runtime role has BYPASSRLS"
-            assert role["relrowsecurity"], "RLS is not enabled"
-            assert not role["owns_table"] or role["relforcerowsecurity"], "Table owner bypasses RLS"
-            assert conn.scalar(text("SELECT count(*) FROM pg_policies WHERE schemaname='public' AND tablename='assistants'")), "No assistant policies"
+        # Roles must be provisioned explicitly in this disposable local cluster.
+        root = Path(__file__).resolve().parents[1]
+        config = Config(str(root / "alembic.ini"))
+        config.set_main_option("script_location", str(root / "alembic"))
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("MIGRATION_DATABASE_URL", admin_url)
+            command.upgrade(config, "head")
+        validate_runtime_role(runtime)
+        yield admin, runtime
     finally:
-        engine.dispose()
+        runtime.dispose()
+        admin.dispose()
 
 
-def test_postgresql_persistence_and_application_owner_isolation():
-    url = os.getenv("PHASE1_TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("PHASE1_TEST_DATABASE_URL absent: requires a dedicated migrated test database")
-    expected_role = os.getenv("PHASE1_TEST_RUNTIME_ROLE")
-    if not expected_role:
-        pytest.skip("PHASE1_TEST_RUNTIME_ROLE absent: explicitly identify runtime-equivalent role")
-    engine = connect_engine(url)
-    factory = sessionmaker(engine, expire_on_commit=False)
-    owner_a, owner_b = uuid4(), uuid4()
-    current_owner = [owner_a]
+@pytest.fixture
+def corpus(postgres):
+    admin, runtime = postgres
+    factory = sessionmaker(runtime, expire_on_commit=False)
+    owners = [uuid4(), uuid4()]
+    identifiers = []
+    try:
+        for owner in owners:
+            with factory.begin() as session:
+                set_owner_identity(session, owner)
+                item = AssistantRepository(session).create(owner, AssistantCreate(**payload()))
+                identifiers.append(item.id)
+        yield factory, owners, identifiers
+    finally:
+        # Admin cleanup is restricted to test-generated owners, not runtime DELETE.
+        with admin.begin() as conn:
+            for owner in owners:
+                conn.execute(text("DELETE FROM public.assistants WHERE owner_id=:owner"), {"owner": owner})
+
+
+def test_raw_sql_owner_isolation_and_pooled_identity(corpus):
+    factory, owners, ids = corpus
+    for owner, identifier in zip(owners, ids):
+        with factory.begin() as session:
+            set_owner_identity(session, owner)
+            assert session.scalars(text("SELECT id FROM public.assistants")).all() == [identifier]
+            other = ids[1] if identifier == ids[0] else ids[0]
+            assert session.execute(text("UPDATE public.assistants SET tone='wrong' WHERE id=:id"), {"id": other}).rowcount == 0
+        with factory.begin() as session:
+            assert session.scalars(text("SELECT id FROM public.assistants")).all() == []
+
+
+@pytest.mark.parametrize("identity", [None, "", "not-a-uuid"])
+def test_missing_or_invalid_identity_fails_closed(corpus, identity):
+    factory, _, _ = corpus
+    if identity == "not-a-uuid":
+        with pytest.raises(DBAPIError), factory.begin() as session:
+            session.execute(text("SELECT set_config('app.owner_id', :id, true)"), {"id": identity})
+            session.execute(text("SELECT * FROM public.assistants"))
+    else:
+        with factory.begin() as session:
+            if identity is not None:
+                session.execute(text("SELECT set_config('app.owner_id', '', true)"))
+            assert session.scalars(text("SELECT id FROM public.assistants")).all() == []
+        with pytest.raises(DBAPIError), factory.begin() as session:
+            AssistantRepository(session).create(uuid4(), AssistantCreate(**payload()))
+
+
+def test_forged_insert_and_owner_update_rejected(corpus):
+    factory, owners, ids = corpus
+    with pytest.raises(DBAPIError), factory.begin() as session:
+        set_owner_identity(session, owners[0])
+        AssistantRepository(session).create(owners[1], AssistantCreate(**payload()))
+    with pytest.raises(DBAPIError), factory.begin() as session:
+        set_owner_identity(session, owners[0])
+        session.execute(text("UPDATE public.assistants SET owner_id=:owner WHERE id=:id"), {"owner": owners[1], "id": ids[0]})
+
+
+@pytest.mark.parametrize("sql", [
+    "DELETE FROM public.assistants", "TRUNCATE public.assistants",
+    "ALTER TABLE public.assistants DISABLE ROW LEVEL SECURITY", "SET ROLE postgres",
+])
+def test_runtime_forbidden_operations(corpus, sql):
+    factory, owners, _ = corpus
+    with pytest.raises(DBAPIError), factory.begin() as session:
+        set_owner_identity(session, owners[0])
+        session.execute(text(sql))
+
+
+def test_rollback_clears_changes_and_identity(corpus):
+    factory, owners, ids = corpus
+    with pytest.raises(RuntimeError), factory.begin() as session:
+        set_owner_identity(session, owners[0])
+        session.execute(text("UPDATE public.assistants SET tone='rolled-back' WHERE id=:id"), {"id": ids[0]})
+        AssistantRepository(session).create(owners[0], AssistantCreate(**payload()))
+        raise RuntimeError("abort request")
+    with factory.begin() as session:
+        assert session.scalars(text("SELECT id FROM public.assistants")).all() == []
+        set_owner_identity(session, owners[0])
+        assert session.scalars(text("SELECT tone FROM public.assistants")).all() == [payload()["tone"]]
+
+
+def test_api_commit_and_cross_owner_denial(corpus):
+    factory, owners, ids = corpus
     app = create_app()
     app.state.session_factory = factory
-    app.dependency_overrides[get_current_owner] = lambda: OwnerContext(current_owner[0])
+    app.dependency_overrides[get_current_owner] = lambda: OwnerContext(owners[0])
     client = TestClient(app)
-    try:
-        with engine.connect() as conn:
-            assert conn.scalar(text("SELECT current_user")) == expected_role
-        created = client.post("/assistants", json=payload())
-        assert created.status_code == 201
-        identifier = created.json()["id"]
-        assert client.patch(f"/assistants/{identifier}", json={"tone": "formal"}).status_code == 200
-        with factory() as session:
-            assert session.scalar(select(Assistant).where(Assistant.id == UUID(identifier))).tone == "formal"
-        current_owner[0] = owner_b
-        assert client.get("/assistants").json() == []
-        assert client.get(f"/assistants/{identifier}").status_code == 404
-        assert client.patch(f"/assistants/{identifier}", json={"tone": "changed"}).status_code == 404
-        current_owner[0] = owner_a
-        assert client.get(f"/assistants/{identifier}").json()["tone"] == "formal"
-    finally:
-        with factory.begin() as session:
-            session.execute(delete(Assistant).where(Assistant.owner_id.in_([owner_a, owner_b])))
-        engine.dispose()
+    assert client.patch(f"/assistants/{ids[0]}", json={"tone": "formal"}).status_code == 200
+    assert client.get(f"/assistants/{ids[1]}").status_code == 404
+    assert client.patch(f"/assistants/{ids[1]}", json={"tone": "wrong"}).status_code == 404
+    with factory.begin() as session:
+        set_owner_identity(session, owners[0])
+        assert session.scalar(text("SELECT tone FROM public.assistants WHERE id=:id"), {"id": ids[0]}) == "formal"
+
+
+def test_data_api_grants_absent(postgres):
+    admin, _ = postgres
+    with admin.connect() as conn:
+        for role in ("anon", "authenticated"):
+            assert conn.scalar(text("SELECT EXISTS (SELECT FROM pg_roles WHERE rolname=:role)"), {"role": role}), "Provision local stand-in Data API roles"
+            for permission in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+                assert not conn.scalar(text("SELECT has_table_privilege(:role,'public.assistants',:permission)"), {"role": role, "permission": permission})
+            for permission in ("SELECT", "INSERT", "UPDATE", "REFERENCES"):
+                assert not conn.scalar(text("SELECT has_any_column_privilege(:role,'public.assistants',:permission)"), {"role": role, "permission": permission})

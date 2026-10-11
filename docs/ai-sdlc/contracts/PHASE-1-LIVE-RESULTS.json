@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-11",
+  "passed": [
+    "migration head and unchanged approved trigger",
+    "RLS enabled/forced; no Data API table or column grants",
+    "actual runtime login and exact least-privilege UPDATE grants",
+    "two owner UUIDs isolated in raw SQL; cross-owner UPDATE hidden",
+    "owner_id UPDATE, DELETE, and forged owner INSERT denied",
+    "empty and invalid identity fail closed",
+    "rollback removed all transient fixtures; connection reuse after rollback/commit fails closed",
+    "real Supabase Auth owners: API commit, all configuration fields, independent assistants, isolation and input rejection",
+    "exact current-run fixtures cleaned; runtime DELETE remains forbidden"
+  ],
+  "skipped": [],
+  "retained_assistant_ids": [],
+  "revision": "0002_assistant_owner_rls",
+  "cleaned_fixture_count": 3,
+  "status": "verified"
+}

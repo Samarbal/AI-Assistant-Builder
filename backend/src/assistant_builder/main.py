@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from sqlalchemy.orm import sessionmaker
-from .db import create_database_engine
+from .db import create_database_engine, validate_runtime_role
 
 from .api import router as assistant_router
 from .auth import SupabaseAuthVerifier
@@ -13,10 +13,12 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         engine = create_database_engine() if settings.database_url else None
-        app.state.session_factory = (
-            sessionmaker(engine, autoflush=False, expire_on_commit=False) if engine else None
-        )
         try:
+            if engine is not None:
+                validate_runtime_role(engine)
+            app.state.session_factory = (
+                sessionmaker(engine, autoflush=False, expire_on_commit=False) if engine else None
+            )
             yield
         finally:
             if engine is not None:

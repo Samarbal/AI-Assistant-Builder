@@ -48,8 +48,9 @@ def test_auth_timeout_is_service_unavailable():
     assert "private" not in response.text
 
 
-def test_real_session_commit_update_and_rollback():
+def test_real_session_commit_update_and_rollback(monkeypatch):
     # SQLite verifies transaction lifecycle only, never PostgreSQL/RLS behavior.
+    monkeypatch.setattr("assistant_builder.db.set_owner_identity", lambda session, owner: None)
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
@@ -81,6 +82,7 @@ def test_engine_created_once_and_disposed(monkeypatch):
     engine = MagicMock()
     create = MagicMock(return_value=engine)
     monkeypatch.setattr(main, "create_database_engine", create)
+    monkeypatch.setattr(main, "validate_runtime_role", lambda engine: None)
     monkeypatch.setattr(main, "get_settings", lambda: type("Settings", (), {
         "database_url": "configured", "app_name": "test", "supabase_url": None,
         "supabase_anon_key": None,
