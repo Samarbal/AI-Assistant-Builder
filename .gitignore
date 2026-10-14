@@ -1,0 +1,11 @@
+# Local secrets and generated verification evidence are never release artifacts.
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+# Live reports contain project-specific assistant/file identifiers.
+docs/ai-sdlc/contracts/PHASE-2-*.json
+docs/ai-sdlc/contracts/PHASE-2-*.tmp

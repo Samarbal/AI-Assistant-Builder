@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     environment: str = "development"
     supabase_url: str | None = None
     supabase_anon_key: str | None = None
+    supabase_storage_key: str | None = Field(default=None, repr=False)
+    supabase_storage_bucket: str = 'knowledge-files'
+    storage_signed_url_seconds: int = Field(default=60, ge=1, le=300)
 
 
 @lru_cache

@@ -74,7 +74,8 @@ def main():
                 config = Config(str(root / "alembic.ini"))
                 config.set_main_option("script_location", str(root / "alembic"))
                 config.attributes["connection"] = connection
-                command.upgrade(config, "head")
+                # This reviewed deployment tool is Phase 1 only, even after new revisions exist.
+                command.upgrade(config, "0002_assistant_owner_rls")
                 for table in ("assistants", "alembic_version"):
                     for role in ("anon", "authenticated", "service_role", "assistant_runtime"):
                         for privilege in ("DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"):

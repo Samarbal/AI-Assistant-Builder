@@ -88,8 +88,10 @@ The initial single-instance rate limit is approximately 30 requests per minute p
 - Each file is at most 10 MB.
 - Original files remain private in Supabase Storage.
 - Metadata and processing state remain in Supabase PostgreSQL.
-- Processing states must distinguish at least accepted, processing, ready, and failed.
-- Only ready files may contribute chunks to retrieval.
+- Phase 2 ingestion distinguishes accepted, processing, extracted, and failed.
+- `extracted` means text persisted, not ready for retrieval. A later indexing
+  contract must establish retrieval readiness; only successfully indexed eligible
+  files may contribute chunks. The existing `ready` fixture represents that future state.
 - Malformed, encrypted, scanned, empty, and unsupported documents become failed and never become retrievable knowledge.
 - Owner file access uses short-lived signed URLs only after authentication and ownership checks.
 

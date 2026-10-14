@@ -4,6 +4,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import Depends, Header, HTTPException, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,8 @@ class SupabaseAuthVerifier:
 
 def get_current_owner(
     request: Request,
-    authorization: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, include_in_schema=False),
+    swagger_bearer: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
 ) -> OwnerContext:
     verifier: AuthVerifier | None = getattr(request.app.state, "auth_verifier", None)
     if authorization is None:
