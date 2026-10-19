@@ -1,0 +1,10 @@
+.page { display: grid; gap: 24px; min-width: 0; }
+.heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.heading h1 { margin: 0 0 8px; }
+.page p { color: var(--color-muted, #6a6e80); overflow-wrap: anywhere; }
+.page h2 { font-size: 18px; overflow-wrap: anywhere; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 20px; }
+.editor { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 28px; align-items: start; }
+.editor form > div:not(.heading), .editor aside > div, .grid > div { padding: 24px; }
+.editor form .grid > div { padding: 0; }
+@media (max-width: 900px) { .editor { grid-template-columns: 1fr; } }

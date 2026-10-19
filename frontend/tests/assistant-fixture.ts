@@ -1,0 +1,1 @@
+export const assistant = { id: 'example', name: 'Support', role: 'Customer service', response_style: 'Concise', tone: 'Friendly', fallback_message: 'I could not find an answer.', colors: { primary: '#635BFF', legacy: 'unchanged' }, state: 'draft', created_at: '', updated_at: '' }

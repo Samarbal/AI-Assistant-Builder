@@ -1,0 +1,28 @@
+:root {
+  font-family: 'Inter Variable', Inter, sans-serif;
+  color: #20222c;
+  background: #fcfcfd;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --color-primary: #635bff;
+  --color-primary-hover: #5145e8;
+  --color-primary-soft: #f0eeff;
+  --color-ink: #20222c;
+  --color-muted: #6a6e80;
+  --color-border: #e7e8ef;
+  --color-surface: #fff;
+  --color-background: #fcfcfd;
+  --color-danger: #b42318;
+  --color-danger-soft: #fff1f0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 40px;
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --shadow-card: 0 2px 4px rgb(32 34 44 / 3%);
+}

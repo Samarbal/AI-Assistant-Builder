@@ -1,0 +1,26 @@
+.button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid transparent; border-radius: var(--radius-control); font-size: 14px; font-weight: 500; line-height: 1.4; text-align: center; }
+.button:hover { text-decoration: none; }
+.primary { color: white; background: var(--color-primary); }
+.primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+.secondary { color: var(--color-ink); background: white; border-color: var(--color-border); }
+.secondary:hover:not(:disabled) { background: var(--color-background); }
+.danger { color: white; background: var(--color-danger); }
+.button:disabled { opacity: .55; }
+.badge { display: inline-flex; align-items: center; white-space: nowrap; padding: 3px 8px; color: #585c6d; background: #f1f2f6; border-radius: 5px; font-size: 11px; font-weight: 500; line-height: 1.5; }
+.card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
+.alert { padding: 12px 16px; border-radius: var(--radius-control); background: var(--color-primary-soft); color: #5148a4; font-size: 13px; }
+.error { background: var(--color-danger-soft); color: var(--color-danger); }
+.field { display: grid; gap: 8px; }
+.field label { font-weight: 500; }
+.field input { min-width: 0; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-control); background: white; color: var(--color-ink); }
+.field input[aria-invalid='true'] { border-color: var(--color-danger); }
+.field p { font-size: 12px; }
+.field .fieldError { color: var(--color-danger); }
+.empty { min-height: 420px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 48px 24px; text-align: center; }
+.empty h2 { font-size: 23px; }
+.emptyCopy { max-width: 480px; }
+.emptyIcon { display: grid; place-items: center; width: 76px; height: 76px; border-radius: 20px; background: var(--color-primary-soft); }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; flex-shrink: 0; }
+.loading { display: flex; align-items: center; gap: 8px; color: var(--color-muted); padding: 24px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 767px) { .empty { min-height: 360px; padding: 32px 20px; } .empty h2 { font-size: 21px; } }
