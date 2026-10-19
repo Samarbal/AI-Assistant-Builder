@@ -6,10 +6,23 @@ Status: draft
 
 - Specification: `docs/ai-sdlc/specs/SPEC-001.md`
 - Intent: `intent/ai-assistant-builder.md`
-- Timeline: approximately 4.5 weeks for implementation.
+- Original timeline: approximately 4.5 weeks for implementation. The UI/UX sprint added on 2026-10-14 requires a revised schedule; no new overall completion date is committed.
 - Backend direction supplied for planning: Python with FastAPI.
-- This plan covers only the requirements and acceptance criteria in SPEC-001. It does not select an AI provider, database, vector store, infrastructure, framework beyond the supplied FastAPI direction, or authentication implementation.
-- The specification file currently says `Status: draft`, although this request identifies it as approved. The plan remains draft and this status mismatch requires human review; neither source file is changed by this plan.
+- This plan covers only the requirements and acceptance criteria in SPEC-001. Accepted ADR-001 through ADR-005 govern architecture; React/TypeScript/Vite and UI-02 were approved on 2026-10-14.
+- SPEC-001 and this plan intentionally remain draft during implementation, as explicitly authorized by the developer. Their draft status is not an implementation blocker.
+
+## Current sequence and dependencies (2026-10-14)
+
+Phase 0 → Phase 1 → Phase 2 **completed** → **UI/UX Implementation Sprint (UI-02 verified; UI-04 assistant integration implemented, review before UI-05)**
+→ Phase 3 **planned, temporarily postponed** → Phase 4 **planned** → Phase 5 **planned**.
+
+The developer requested a usable owner frontend before RAG/Playground. Existing
+phase numbers, requirements, acceptance criteria and accepted ADRs remain intact.
+UI-02 adds the frontend foundation. UI-03 adds Supabase Auth and protected owner
+navigation; UI-04 connects assistant workflows. Knowledge integration remains UI-05. The root URL is
+reserved for future marketing. Review is required before UI-05.
+See [UI-UX-SPRINT-001](UI-UX-SPRINT-001.md) for Figma review, API mapping, milestones,
+proposed dependencies, tests and decisions requiring review.
 
 ## Proposed architecture summary
 
@@ -36,7 +49,7 @@ No application code or infrastructure is created by this plan.
 
 Required MVP work:
 
-- Resolve the draft-status mismatch between the request and `SPEC-001.md` through human review without changing scope.
+- Draft-status clarification resolved by the developer: keep SPEC and PLAN draft during implementation.
 - Convert the specification requirements and acceptance criteria into API/domain contracts and test fixtures.
 - Confirm the concrete persistence, file-storage, retrieval, AI-provider, and authentication choices through ADR review before implementation.
 - Define owner-scoped identifiers and draft/published state transitions.
@@ -71,7 +84,30 @@ Required MVP work:
 
 Tests and traceability: FR-003; AC-004, AC-005, AC-006, AC-007.
 
+### UI/UX Implementation Sprint: owner frontend (planned, before Phase 3)
+
+- Depends on completed Phase 1/2 APIs and accepted Auth/Storage boundaries.
+- Prepare responsive Figma-based login/registration, assistant list/create/configure,
+  and knowledge upload/list/download/remove flows; reusable controls and feedback.
+- Integrate Supabase Auth and existing FastAPI routes only. Use the proposed
+  React/TypeScript/Vite stack after review; install nothing in the planning turn.
+- Deliver milestones in order: visual/API reconciliation; frontend shell; Auth;
+  assistant workflows; knowledge workflows; responsive/accessibility/security tests.
+- Playground, publishing/embed and conversations remain visibly deferred; no mock
+  functionality or unsupported backend endpoint is introduced.
+- Exit: reviewer accepts browser workflows, test results and learning report.
+  Then resume Phase 3, including its unresolved provider/index validation items.
+- Planning estimate: 4–6 focused development days, subject to design/stack review;
+  re-baseline the original total schedule rather than silently compressing later work.
+
+Traceability: FR-001–003; AC-001–007; NFR-001–002 and AC-018 for implemented workflows.
+Future workflow acceptance remains owned by Phases 3–5.
+
 ### Phase 3: Response orchestration and optional playground (5-6 days)
+
+Status: planned, temporarily postponed until the UI/UX sprint review. Not canceled.
+Reuse the frontend shell and Auth boundary; add the actual Playground UI only when
+its backend behavior and RAG readiness are implemented and tested.
 
 Required MVP work:
 
@@ -83,6 +119,9 @@ Required MVP work:
 Tests and traceability: FR-004, FR-005; AC-008, AC-009, AC-017.
 
 ### Phase 4: Publishing, embed delivery, and visitor chat (5-6 days)
+
+Status: planned; follows Phase 3. Reuse sprint navigation without treating its
+disabled future-feature entries as completed publishing or conversation features.
 
 Required MVP work:
 
@@ -96,6 +135,8 @@ Required MVP work:
 Tests and traceability: FR-006 through FR-010, NFR-003, NFR-004; AC-010 through AC-016.
 
 ### Phase 5: Hardening and MVP acceptance (3-4 days)
+
+Status: planned; follows Phase 4 and includes full frontend/backend regression.
 
 Required MVP work:
 
@@ -111,9 +152,9 @@ Tests and traceability: all requirements and AC-001 through AC-018, with particu
 
 | Specification item | Planned implementation and tests |
 | --- | --- |
-| FR-001; AC-001-002 | Owner-scoped assistant service, account boundary tests, cross-owner access denial tests. |
-| FR-002; AC-003 | Configuration service and persistence contract tests for every configured field. |
-| FR-003; AC-004-007 | File validation, association, listing/view, removal, and replacement tests. |
+| FR-001; AC-001-002 | Phase 1 owner services and isolation tests; UI/UX sprint browser creation/listing and account-switch tests. |
+| FR-002; AC-003 | Phase 1 configuration persistence; UI/UX sprint save/reopen forms, with Phase 2 file associations. |
+| FR-003; AC-004-007 | Phase 2 file lifecycle; UI/UX sprint upload/list/download/remove/replace browser tests. |
 | FR-004; AC-008-009 | Playground service tests using current draft configuration and knowledge. |
 | FR-005; AC-017 | Grounding/fallback orchestration tests, including insufficient-knowledge and failed-retrieval cases. |
 | FR-006; AC-010 | Publish tests proving playground use is optional. |
@@ -144,18 +185,19 @@ Tests and traceability: all requirements and AC-001 through AC-018, with particu
 - Conversation persistence failure: do not claim a conversation was saved when it was not; record an operational error without exposing sensitive content.
 - Embed or public request for an unpublished or unavailable assistant: fail safely without exposing draft configuration or owner data.
 
-## Significant ADR candidates
+## Architecture references
 
-These are candidates only; no ADRs are created by this plan:
+The original candidates have been resolved/grouped into the existing accepted ADRs:
 
-- ADR-001: Persistence model and transaction boundaries for accounts, assistants, versions, files, and conversations.
-- ADR-002: File storage and document-processing approach for PDF and DOCX uploads.
-- ADR-003: Retrieval/indexing approach and the boundary between knowledge processing and response orchestration.
-- ADR-004: AI provider abstraction and provider selection for grounded responses.
-- ADR-005: Authentication and authorization model for owner isolation.
-- ADR-006: Public embed and visitor-chat delivery boundary, including how published assistant identity is protected.
-- ADR-007: Draft/published versioning and publish/update atomicity.
-- ADR-008: Operational limits, retention, and failure recovery for visitor conversations and uploaded knowledge.
+- ADR-001: Data Platform, Persistence, and Ownership Isolation.
+- ADR-002: Authentication and Authorization.
+- ADR-003: Knowledge Storage, Processing, and Semantic RAG.
+- ADR-004: AI Generation and Embedding Integration.
+- ADR-005: Publishing, Public Widget, and Public Access Security.
+
+Their decisions remain unchanged. The UI/UX sprint proposes frontend build/routing,
+browser session storage and origin configuration for review; no new accepted ADR
+is created by this planning update.
 
 ## Technical risks and assumptions
 
@@ -169,7 +211,7 @@ Risks:
 
 Assumptions:
 
-- A usable account identity and owner context are available to the MVP, while the concrete authentication mechanism remains an ADR decision.
+- Supabase Auth and verified FastAPI owner context are implemented under ADR-002; the UI/UX sprint consumes that boundary.
 - The project will use Python and FastAPI for the backend boundary as supplied by the request.
 - The MVP can use replaceable interfaces for persistence, file storage, retrieval, and AI response generation while concrete technologies are selected.
 - The owner-configured fallback message is sufficient for unknown-answer behavior; no automated answer-quality evaluation is required.

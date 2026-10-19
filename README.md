@@ -31,6 +31,27 @@ Phase 2 is completed: PDF/DOCX upload, text extraction, private file storage, at
 
 ## Architecture
 
+Next: a [UI/UX Implementation Sprint](docs/ai-sdlc/plans/UI-UX-SPRINT-001.md) is
+underway before Phase 3, ultimately using the completed owner and knowledge APIs. Phase 2
+remains completed; RAG/Playground and later phases are postponed, not canceled.
+UI-02 provides the React/TypeScript/Vite foundation. UI-03 adds Supabase Auth,
+protected owner routes and responsive login/registration. UI-04 connects assistant listing,
+creation and draft configuration; review is required before UI-05 knowledge integration. `/` is reserved for future marketing; `/assistants`
+is the owner dashboard and `/dev/dashboard` is a development-only preview.
+See [frontend setup](frontend/README.md) and
+[sprint learning notes](docs/learning/UI-UX-SPRINT-001-EXPLAINED.md).
+
+To run the frontend (Auth setup instructions are in the frontend README):
+
+```powershell
+cd frontend
+npm ci
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. For a built preview: `npm run build`, then
+`npm run preview -- --port 4173 --strictPort` and open `http://127.0.0.1:4173`.
+
 ```text
 FastAPI routes
       |
