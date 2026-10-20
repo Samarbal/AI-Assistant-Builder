@@ -13,14 +13,14 @@ Status: draft
 
 ## Current sequence and dependencies (2026-10-14)
 
-Phase 0 → Phase 1 → Phase 2 **completed** → **UI/UX Implementation Sprint (UI-02 verified; UI-04 assistant integration implemented, review before UI-05)**
+Phase 0 → Phase 1 → Phase 2 **completed** → **UI/UX Implementation Sprint (UI-02–05 implemented; UI-06 local review complete; live smoke test and human review pending)**
 → Phase 3 **planned, temporarily postponed** → Phase 4 **planned** → Phase 5 **planned**.
 
 The developer requested a usable owner frontend before RAG/Playground. Existing
 phase numbers, requirements, acceptance criteria and accepted ADRs remain intact.
 UI-02 adds the frontend foundation. UI-03 adds Supabase Auth and protected owner
-navigation; UI-04 connects assistant workflows. Knowledge integration remains UI-05. The root URL is
-reserved for future marketing. Review is required before UI-05.
+navigation; UI-04 connects assistant workflows and UI-05 connects knowledge management.
+The root URL is reserved for future marketing. Review is required before UI-06.
 See [UI-UX-SPRINT-001](UI-UX-SPRINT-001.md) for Figma review, API mapping, milestones,
 proposed dependencies, tests and decisions requiring review.
 

@@ -36,7 +36,8 @@ underway before Phase 3, ultimately using the completed owner and knowledge APIs
 remains completed; RAG/Playground and later phases are postponed, not canceled.
 UI-02 provides the React/TypeScript/Vite foundation. UI-03 adds Supabase Auth,
 protected owner routes and responsive login/registration. UI-04 connects assistant listing,
-creation and draft configuration; review is required before UI-05 knowledge integration. `/` is reserved for future marketing; `/assistants`
+creation and draft configuration. UI-05 connects knowledge upload/list/download/removal;
+UI-06 local review passed; the documented live smoke test and final review remain pending. `/` is reserved for future marketing; `/assistants`
 is the owner dashboard and `/dev/dashboard` is a development-only preview.
 See [frontend setup](frontend/README.md) and
 [sprint learning notes](docs/learning/UI-UX-SPRINT-001-EXPLAINED.md).

@@ -1,6 +1,6 @@
 # UI/UX Implementation Sprint — Owner frontend
 
-Status: UI-03 live Auth review accepted by the developer on 2026-10-18. UI-04 implemented; final verification recorded below. Stop for review before UI-05.
+Status: UI-02–04 accepted; UI-05 implemented; UI-06 local review complete. Live frontend smoke test and human review pending before Phase 3.
 Date: 2026-10-14. Sequence: after completed Phase 2, before planned Phase 3.
 
 ## Purpose and sources
@@ -311,3 +311,24 @@ start Phase 3, or authorize a commit/push. UI-03 requires developer review first
 - Auth browser tests now mock assistant-list requests explicitly so they never depend on a running local backend. No application behavior changed in this checkpoint pass.
 - Tests use controlled HTTP responses; this pass did not repeat live Supabase verification. The known production bundle-size warning remains.
 - Commit scope excludes local environment files, generated artifacts, Docker configuration, local skill installations, and unrelated AGENTS.md edits. No live database changes.
+
+## UI-05 implementation record (2026-10-19)
+
+- Implemented authenticated GET list, multipart POST upload, POST download-url and DELETE removal against the existing knowledge API. No backend changes, migrations, new dependencies, deployments or live data changes.
+- Reused controls, AuthStore token/epoch checks, owner subtree isolation and same-origin proxy. Upload/download/removal state is memory-only, aborted on unmount, and ignored after account changes. 401 signs out; mutations are not replayed automatically.
+- Client limits match the backend: one PDF/DOCX per action, 1–10,000,000 bytes, five current attachments including failures. Backend remains authoritative for content and concurrent uploads.
+- Reconcile the list after successful or uncertain upload/removal. If reconciliation fails, block operations until Refresh succeeds. Show reserved/processing/extracted/failed honestly; no OCR, fake progress, retry endpoint, or RAG readiness claim.
+- Signed links are transient HTTPS links with local expiry and no referrer/opener; removal confirmation describes draft detachment and existing-link lifetime. Refresh/new operations clear displayed signed links.
+- Traceability: FR-003, knowledge part of FR-002/AC-003, AC-004–007, owner-state boundary AC-002, NFR-001/002 and AC-018. Controlled responses do not reverify live RLS or Storage configuration.
+- Figma frame 2:43029 reviewed; local asset provenance recorded. Desktop 1440px and mobile 320px reviewed without horizontal overflow.
+- Learning report: `docs/learning/UI-05-EXPLAINED.md`. Stop before UI-06; real two-owner browser review remains separately authorized work.
+- Verification: focused tests 14 component/API + 3 browser PASS; full regression 51 component/store + 17 Chromium PASS, no skips; lint, TypeScript and build PASS. Browser sandbox teardown stalled; successful final rerun exited 0. Existing >500-kB bundle warning remains (~544 kB / 159 kB gzip). No commit or push.
+
+## UI-06 review record (2026-10-20)
+
+- Corrected empty assistant parent navigation, corrupted assistant loading punctuation, and keyboard focus after cancel/successful file removal. No backend, dependency, or architecture changes.
+- Knowledge frontend/backend contracts match. Local checks: 51 component/store tests and 20 Chromium tests passed, no skips; lint, TypeScript/build passed. Backend upload/download contract subset: 32 passed. A component worker-startup timeout was resolved with a successful serial rerun.
+- Existing bundle-size and backend test-client deprecation warnings remain. Browser responses are controlled; no live frontend verification is claimed.
+- Review, contract comparison, safe live test procedure and gate: `docs/ai-sdlc/contracts/UI-06-REVIEW.md`.
+- Learning report: `docs/learning/PHASE-UI-06-EXPLAINED.md`.
+- UI-06 local review is complete; live smoke test requires explicit approval and then human review. NO-GO for closing the UI sprint/starting Phase 3 until those gates pass. Phase 2 remains completed; no live data, commit or push changes.

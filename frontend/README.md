@@ -1,8 +1,8 @@
-# Owner frontend — UI-04
+# Owner frontend — UI-05 / UI-06
 
 React + TypeScript + Vite with Supabase email/password authentication. Owner routes
-are protected; assistant API integration is implemented. Knowledge integration remains
-deferred. Run FastAPI for assistant workflows. The public marketing page is not implemented.
+are protected; assistant and knowledge API integration are implemented. Run FastAPI
+for owner workflows. The public marketing page is not implemented.
 
 ## Run locally
 
@@ -56,6 +56,7 @@ setup or after a Playwright update. Generated screenshots/reports are ignored.
   responsive auth forms and safe error mapping.
 - `src/pages/`: overview and explicitly labeled feature placeholders; no data requests.
 - `src/assistants/`: authenticated HTTP client, list and create/edit forms.
+- `src/knowledge/`: file listing, upload, signed download links and confirmed draft removal.
 - `src/components/`: Button, ButtonLink, TextField, Badge, Card, Alert, EmptyState,
   LoadingState, and local design icons.
 - `src/styles/`: Figma-derived tokens and global keyboard/layout defaults.
@@ -64,11 +65,11 @@ setup or after a Playwright update. Generated screenshots/reports are ignored.
 
 Routes: `/` reserved for future marketing (minimal placeholder), `/login`, `/register`;
 `/assistants` is the authenticated dashboard. `/assistants/new` and
-`/assistants/:id/configuration` are connected forms; `knowledge` remains a protected placeholder.
+`/assistants/:id/configuration` are connected forms; `/assistants/:id/knowledge` manages files.
 `/dev/dashboard` is an unauthenticated UI-only preview in development builds only;
 it does not grant access to owner routes and is absent in production builds.
 
-Authentication and assistant workflows are functional; knowledge integration,
+Authentication, assistant and knowledge workflows are functional;
 Playground, publishing and conversations remain deferred.
 
 ## Manual Auth review
@@ -141,4 +142,34 @@ Vite forwards same-origin `/api/assistants` requests to local FastAPI `/assistan
 The browser supplies the current Auth access token; it never supplies `owner_id`.
 Production hosting must provide the equivalent same-origin `/api` reverse proxy;
 `vite preview` alone does not provide this development proxy.
-Knowledge integration remains UI-05; Playground and publishing remain deferred.
+Playground and publishing remain deferred.
+
+## UI-05: knowledge files
+
+Open an assistant, then its Knowledge tab. Choose/drop one PDF or DOCX and select
+Upload file. Limits are five current attachments (including failed ones), and
+10,000,000 bytes per file. The backend validates actual content; filename validation
+in the browser does not establish that a document is safe or readable.
+
+The list shows metadata and processing status. Use Refresh files for pending states.
+Text extracted is not RAG readiness. Remove a failed attachment before retrying;
+replace an existing file by removing it and uploading its replacement.
+
+Download requests a short-lived link (60 seconds by default). Select Open private
+download before it expires. Links are not saved to browser storage; do not share
+or screenshot them. Removal detaches the draft attachment; it does not revoke an
+already-issued link or immediately erase stored bytes.
+
+Uploads have a 120-second client timeout; other knowledge requests use 20 seconds.
+A timeout does not cancel server processing. Upload/removal outcomes refresh the
+list automatically, including failures. If refresh also fails, operations are
+blocked until a successful Refresh files. Mutations are never automatically retried.
+
+Focused checks: `npm.cmd test -- tests/knowledge.test.tsx` and
+`npm.cmd run test:browser -- tests/browser/knowledge.spec.ts`.
+These use controlled responses and never modify live Supabase. For the Arabic
+walkthrough, see [UI-05 learning notes](../docs/learning/UI-05-EXPLAINED.md).
+
+## UI-06 review
+
+Local review and checks passed. See [review and live smoke-test procedure](../docs/ai-sdlc/contracts/UI-06-REVIEW.md). Live frontend integration remains unverified by the automated checks. Brand colors use native color pickers; choose a swatch and save the draft.
