@@ -48,7 +48,7 @@ describe('UI-04 assistant integration', () => {
     await screen.findByText('Draft saved.')
     const options = (fetch.mock.calls as unknown as [string, RequestInit][])[1][1]
     expect(JSON.parse(options.body as string)).toEqual({ name: 'Changed' })
-    expect(screen.getByLabelText('Primary color')).toHaveValue('#635BFF')
+    expect(screen.getByLabelText('Primary color')).toHaveValue('#635bff')
   })
   it('retains input after a failed save', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(assistant))).mockResolvedValue(new Response('', { status: 503 }))

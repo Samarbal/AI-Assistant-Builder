@@ -7,4 +7,6 @@
 .editor { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 28px; align-items: start; }
 .editor form > div:not(.heading), .editor aside > div, .grid > div { padding: 24px; }
 .editor form .grid > div { padding: 0; }
+.colorPicker { width: 100%; min-height: 44px; cursor: pointer; }
+.colorPicker:disabled { cursor: not-allowed; }
 @media (max-width: 900px) { .editor { grid-template-columns: 1fr; } }

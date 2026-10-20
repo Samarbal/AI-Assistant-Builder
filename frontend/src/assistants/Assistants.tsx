@@ -20,7 +20,7 @@ export function AssistantList() {
     return () => controller.abort()
   }, [store, attempt])
   return <section className={styles.page}><header className={styles.heading}><div><h1>Your assistants</h1><p>Build, manage, and grow your AI assistants.</p></div><ButtonLink to="/assistants/new">Create assistant</ButtonLink></header>
-    {error ? <><Alert kind="error">{error}</Alert><Button onClick={() => { setError(''); setItems(null); setAttempt(attempt + 1) }}>Try again</Button></> : !items ? <LoadingState label="Loading assistantsâ€¦" /> : items.length === 0 ? <Card><h2>Create your first assistant</h2><p>Give it a purpose and a voice that feels like your business.</p></Card> : <div className={styles.grid}>{items.map(item => <Card key={item.id}><Badge>{item.state}</Badge><h2>{item.name}</h2><p>{item.role}</p><ButtonLink variant="secondary" to={`/assistants/${item.id}/configuration`}>Configure {item.name}</ButtonLink></Card>)}</div>}
+    {error ? <><Alert kind="error">{error}</Alert><Button onClick={() => { setError(''); setItems(null); setAttempt(attempt + 1) }}>Try again</Button></> : !items ? <LoadingState label="Loading assistants…" /> : items.length === 0 ? <Card><h2>Create your first assistant</h2><p>Give it a purpose and a voice that feels like your business.</p></Card> : <div className={styles.grid}>{items.map(item => <Card key={item.id}><Badge>{item.state}</Badge><h2>{item.name}</h2><p>{item.role}</p><ButtonLink variant="secondary" to={`/assistants/${item.id}/configuration`}>Configure {item.name}</ButtonLink></Card>)}</div>}
   </section>
 }
 
@@ -48,7 +48,7 @@ function Editor() {
     return () => active.abort()
   }, [id, store])
   const dirty = JSON.stringify(data) !== JSON.stringify(original)
-  if (loading) return error ? <Alert kind="error">{error}</Alert> : <LoadingState label="Loading configurationâ€¦" />
+  if (loading) return error ? <Alert kind="error">{error}</Alert> : <LoadingState label="Loading configuration…" />
   return <section className={styles.page}><header className={styles.heading}><div><h1>{id ? 'Assistant configuration' : 'Create an assistant'}</h1><p>Give your assistant a clear purpose and a personality that feels like you.</p></div><Badge>{dirty ? 'Unsaved changes' : 'Draft'}</Badge></header>
     <div className={styles.editor}><form className={styles.page} onSubmit={async event => {
       event.preventDefault(); if (locked.current || !controller.current) return
@@ -63,7 +63,7 @@ function Editor() {
       finally { locked.current = false; if (!active.signal.aborted) setBusy(false) }
     }}>
       <Card><div className={styles.page}><h2>Assistant basics & voice</h2>{fields.map(([key, label, limit]) => <TextField key={key} label={label} value={data[key]} required maxLength={limit} disabled={busy} onChange={event => { setSaved(false); setData({ ...data, [key]: event.target.value }) }} hint={key === 'fallback_message' ? 'Used when sufficient business knowledge cannot be found.' : undefined} />)}</div></Card>
-      <Card><h2>Brand colors</h2><div className={styles.grid}>{(['primary', 'accent'] as const).map(key => <TextField key={key} label={`${key === 'primary' ? 'Primary' : 'Accent'} color`} placeholder="#635BFF" value={data.colors[key] ?? ''} disabled={busy} onChange={event => { const colors = { ...data.colors }; if (event.target.value) colors[key] = event.target.value; else delete colors[key]; setData({ ...data, colors }); setSaved(false) }} />)}</div></Card>
+      <Card><h2>Brand colors</h2><div className={styles.grid}>{(['primary', 'accent'] as const).map(key => <TextField key={key} label={`${key === 'primary' ? 'Primary' : 'Accent'} color`} type="color" className={styles.colorPicker} value={/^#[0-9a-f]{6}$/i.test(data.colors[key] ?? '') ? data.colors[key] : '#635bff'} hint="Select the swatch to choose a color." disabled={busy} onChange={event => { const colors = { ...data.colors }; if (event.target.value) colors[key] = event.target.value; else delete colors[key]; setData({ ...data, colors }); setSaved(false) }} />)}</div></Card>
       {error && <Alert kind="error">{error}</Alert>}{saved && <Alert>Draft saved.</Alert>}
       <div className={styles.heading}><ButtonLink variant="secondary" to="/assistants">Back to assistants</ButtonLink><Button type="submit" busy={busy} disabled={!!id && !dirty}>{id ? 'Save changes' : 'Create assistant'}</Button></div>
     </form><aside><Card><h2>A first look</h2><Badge>Appearance preview</Badge><h3>{data.name || 'Your assistant'}</h3><p>{data.fallback_message || 'Your fallback message will appear here.'}</p><p>Interactive testing will be available in a later phase.</p></Card></aside></div>
