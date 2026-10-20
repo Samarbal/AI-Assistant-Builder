@@ -1,7 +1,8 @@
 import { AssistantList, AssistantEditor } from '../assistants/Assistants'
-import { Route, Routes } from 'react-router'
+import { KnowledgeFiles } from '../knowledge/KnowledgeFiles'
+import { Navigate, Route, Routes } from 'react-router'
 import { Shell } from './Shell'
-import { Overview, Placeholder, AssistantLayout } from '../pages/Pages'
+import { Overview, AssistantLayout } from '../pages/Pages'
 import { RequireOwner } from '../auth/AuthProvider'
 import { AuthPage } from '../auth/AuthPage'
 import { Link } from 'react-router'
@@ -16,8 +17,9 @@ export function AppRoutes() {
     <Route path="assistants" element={<AssistantList />} />
     <Route path="assistants/new" element={<AssistantEditor key="create" />} />
     <Route path="assistants/:id" element={<AssistantLayout />}>
+      <Route index element={<Navigate to="configuration" replace />} />
       <Route path="configuration" element={<AssistantEditor key="edit" />} />
-      <Route path="knowledge" element={<Placeholder title="Knowledge files" description="Give your assistant knowledge from PDF and DOCX files." milestone="Upload, list, download, and removal will be connected in UI-05. No files are loaded." />} />
+      <Route path="knowledge" element={<KnowledgeFiles />} />
     </Route>
     </Route></Route>
     <Route path="*" element={<main style={{ padding: 32 }}><h1>Page not found</h1><Link to="/assistants">Go to your dashboard</Link></main>} />

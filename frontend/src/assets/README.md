@@ -29,3 +29,11 @@ On mobile the welcome illustration is hidden and the form reflows; no mobile Aut
 frame was supplied. Google, recovery, full-name collection, and nonexistent policy
 links were omitted to match approved scope. The static sample is explicitly labeled
 illustrative and has no chat input or functionality.
+
+UI-05 (2026-10-19): knowledge frame `2:43029` in approved copy
+`BzfdfMerOG9BoX28X4usvS`. Added local `knowledge-*.svg`: upload (23px in
+44px tile), plus (16px), file (18px in 38x44px tile), download/remove (17px),
+ready/processing/failed (11px status markers), book (26px), check (15px), info
+(18px). Original root dimensions retained. Existing shell assets are reused.
+Adaptations: one upload at a time, real extracted status, no invented percentage
+or retry endpoint, no Playground continuation, truthful private-storage copy.

@@ -14,7 +14,7 @@ function App({ path }: { path: string }) {
 }
 
 describe('UI-02 shell routes', () => {
-  beforeEach(() => vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/assistants') ? [] : assistant)))))
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/assistants') || url.endsWith('/knowledge-files') ? [] : assistant)))))
   afterEach(() => vi.unstubAllGlobals())
   it.each([
     ['/', 'AI Assistant Builder'], ['/assistants', 'Your assistants'], ['/assistants/new', 'Create an assistant'],
