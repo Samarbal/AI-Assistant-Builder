@@ -5,8 +5,15 @@ import { signedIn } from './auth-helpers'
 import { knowledgeFile } from '../knowledge-fixture'
 import type { KnowledgeFile } from '../../src/knowledge/api'
 
+const preparation = (readiness: 'needs_preparation' | 'preparing' | 'ready' = 'needs_preparation') => ({
+  readiness, operation_id: readiness === 'preparing' ? 'operation-123' : null,
+  completed_chunks: readiness === 'preparing' ? 1 : 0, total_chunks: 3,
+  eligible_files: 1, next_action: readiness === 'preparing' ? 'continue' : readiness === 'ready' ? null : 'prepare', reason: null,
+})
+
 test('PDF/DOCX upload, private download, remove and replace on mobile', async ({ page }) => {
   await signedIn(page)
+  await page.route('**/api/assistants/example/playground/status', route => route.fulfill({ json: preparation() }))
   let files: KnowledgeFile[] = []
   let uploads = 0
   const documentBytes = Buffer.from('controlled document bytes')
@@ -69,6 +76,7 @@ test('PDF/DOCX upload, private download, remove and replace on mobile', async ({
 
 test('server limit wins over a stale four-file list', async ({ page }) => {
   await signedIn(page)
+  await page.route('**/api/assistants/example/playground/status', route => route.fulfill({ json: preparation() }))
   const files = Array.from({ length: 4 }, (_, i) => ({ ...knowledgeFile, id: `${i}`, original_filename: `${i}.pdf` }))
   let posts = 0
   await page.route('**/knowledge-files', async route => {
@@ -91,7 +99,30 @@ test('server limit wins over a stale four-file list', async ({ page }) => {
 test('expired session redirects without exposing file data', async ({ page }) => {
   await signedIn(page)
   await page.route('**/knowledge-files', route => route.fulfill({ status: 401, json: {} }))
+  await page.route('**/api/assistants/example/playground/status', route => route.fulfill({ status: 401, json: {} }))
   await page.goto('/assistants/example/knowledge')
   await expect(page).toHaveURL(/\/login$/)
   await expect(page.getByRole('heading', { name: 'Knowledge files' })).toHaveCount(0)
+})
+
+test('knowledge preparation is an explicit single-batch action with safe progress', async ({ page }) => {
+  await signedIn(page)
+  let prepareRequests = 0
+  await page.route('**/api/assistants/example/knowledge-files', route => route.fulfill({ json: [knowledgeFile] }))
+  await page.route('**/api/assistants/example/playground/status', route => route.fulfill({ json: preparation() }))
+  await page.route('**/api/assistants/example/playground/prepare', async route => {
+    prepareRequests++
+    expect(route.request().method()).toBe('POST')
+    expect(route.request().headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i)
+    expect(route.request().headers().authorization).toBe('Bearer test-only-access-token')
+    expect(route.request().postDataJSON()).toEqual({})
+    await route.fulfill({ status: 202, json: preparation('preparing') })
+  })
+  await page.goto('/assistants/example/knowledge')
+  await expect(page.getByRole('button', { name: 'Prepare knowledge' })).toBeVisible()
+  await expect(page.getByText(/uses AI embedding credits/i)).toBeVisible()
+  await page.getByRole('button', { name: 'Prepare knowledge' }).click()
+  await expect(page.getByText('Progress saved: 1 of 3 chunks. Select Continue to process the next batch.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Continue preparation' })).toBeVisible()
+  expect(prepareRequests).toBe(1)
 })

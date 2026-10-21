@@ -11,10 +11,11 @@ Status: draft
 - This plan covers only the requirements and acceptance criteria in SPEC-001. Accepted ADR-001 through ADR-005 govern architecture; React/TypeScript/Vite and UI-02 were approved on 2026-10-14.
 - SPEC-001 and this plan intentionally remain draft during implementation, as explicitly authorized by the developer. Their draft status is not an implementation blocker.
 
-## Current sequence and dependencies (2026-10-14)
+## Current sequence and dependencies (updated 2026-10-22)
 
 Phase 0 → Phase 1 → Phase 2 **completed** → **UI/UX Implementation Sprint (UI-02–05 implemented; UI-06 local review complete; live smoke test and human review pending)**
-→ Phase 3 **planned, temporarily postponed** → Phase 4 **planned** → Phase 5 **planned**.
+→ Phase 3 **indexing, retrieval, RAG, and Playground implemented locally; final verification blocked by `generation_input_limit`**
+→ Phase 4 **planned** → Phase 5 **planned**.
 
 The developer requested a usable owner frontend before RAG/Playground. Existing
 phase numbers, requirements, acceptance criteria and accepted ADRs remain intact.
@@ -105,9 +106,14 @@ Future workflow acceptance remains owned by Phases 3–5.
 
 ### Phase 3: Response orchestration and optional playground (5-6 days)
 
-Status: planned, temporarily postponed until the UI/UX sprint review. Not canceled.
-Reuse the frontend shell and Auth boundary; add the actual Playground UI only when
-its backend behavior and RAG readiness are implemented and tested.
+Status: Phase 3 implementation is in progress. Versioned indexing, semantic
+retrieval, RAG orchestration, authenticated Playground API/UI, and indexing
+preparation controls are implemented locally. Retrieval calibration succeeded
+with four known-answer and three unknown-answer questions; the resulting local
+`RETRIEVAL_MIN_SIMILARITY` is `0.30347`. The Playground is not ready for acceptance:
+the latest reported request failed with `generation_input_limit`. Diagnose and
+verify that failure before marking Playground ready or Phase 3 complete. The UI-06
+live smoke-test gate also remains pending.
 
 Required MVP work:
 
@@ -117,6 +123,73 @@ Required MVP work:
 - Handle unavailable, malformed, or failed knowledge retrieval and response generation with a safe failure result that does not invent business-specific content.
 
 Tests and traceability: FR-004, FR-005; AC-008, AC-009, AC-017.
+
+#### Phase 3 incremental execution
+
+Use the Phase 3 refinement in `contracts/PHASE-0-CONTRACTS.md` as the single
+contract source; do not create another parallel implementation plan.
+
+| Task | Deliverable and verification | Traceability |
+| --- | --- | --- |
+| 1 — contracts/provider validation | Independent-turn requests, readiness/failure rules, bilingual synthetic fixtures, offline oracle checks; conditional synthetic-only provider smoke test | AC-008/009/017/018 |
+| 2 — deterministic chunking | Persisted text as input; token-aware 600/100 chunks, stable offsets/IDs, Unicode/Arabic cases, resource-limit rejection without silent truncation | AC-008/017 |
+| 3 — additive schema/repositories | Index versions, owned chunks, active reference and budget-attempt ledger; dimension validated first; runtime-role RLS, concurrent claims, atomic activation/rollback; recovery baseline/reference review | AC-008; ADR-001/003/004 |
+| 4 — preparation/embedding | Recommended explicit bounded preparation batches, persisted leases/idempotency, no SQL transaction across external I/O; test crashes, late responses, quota exhaustion, source changes, incompatible reindex | AC-008/017/018 |
+| 5 — retrieval/generation | Exact cosine top-five, calibrated boundary, source-validated citations, no generator call for insufficient evidence; provider mocks and approved live synthetic checks | AC-008/009/017 |
+| 6 — Playground UI/API | Current saved draft on every independent turn, readiness, preparation progress, safe errors, session isolation; no publishing/history | AC-008/009/018 |
+| 7 — release review | Approved migration preflight, real PostgreSQL role/RLS checks, bounded two-owner integration verification, learning review | All above |
+
+Phase 3 implementation update (2026-10-21): indexing persistence and the bounded
+indexing service are implemented locally. The authenticated owner API now exposes
+the contracted status and prepare routes, and the Knowledge tab provides explicit
+one-batch preparation, progress, safe errors, and AI-credit disclosure. Frontend
+status polling is read-only; each embedding batch requires an explicit owner action.
+No live indexing/provider call, deployment, or migration was performed for this UI/API
+work. The UI-06 live smoke-test gate remains pending. Phase 3 is not complete: work
+remains for controlled preparation of this assistant, live retrieval and grounded
+Playground verification, and final Phase 3 review.
+
+Phase 3 progress update (2026-10-22): the developer-reported live retrieval
+calibration completed with 4 known-answer and 3 unknown-answer questions. The
+recommended threshold, `0.30347`, was applied to the local `backend/.env` only;
+that file and local calibration artifacts are excluded from Git. Focused offline
+retrieval/calibration tests passed (27 passed). No provider calls or database
+changes were made during this local threshold update. Playground acceptance remains
+blocked by the reported `generation_input_limit` error; Phase 3 is not complete.
+
+Task 1 recommendations (not accepted ADR amendments): explicit preparation endpoint
+instead of message-triggered indexing; operational limits and budget accounting in
+the existing contract. No new worker infrastructure. Approved foundations include
+versioned atomic indexing, exact cosine, independent turns and validated citations.
+
+Task 1 provider status: endpoint/key/model settings are absent; no external calls
+made. Exact generation/embedding models, dimension, pricing, quota and numeric
+similarity threshold remain unresolved. Named-provider synthetic-data approval and
+secure credentials are prerequisites for live smoke testing. Do not assume
+OpenAI-compatible means a particular model is available.
+
+Task 2 gate: GO only for offline chunking work after human review and tokenizer
+selection/justification; NO-GO for provider-backed indexing, dimension-specific
+migration or production deployment until provider validation passes. The original
+5–6 day estimate is not a validated estimate for the expanded indexing work.
+
+Task 1 local verification (2026-10-20):
+`python -m pytest tests/test_phase3_contracts.py -q -p no:cacheprovider`
+passed 33 checks, zero skips. Scoped `git diff --check` passed. The checks validate
+synthetic contract examples and adversarial counterexamples only, not working RAG,
+API endpoints, provider quality, PostgreSQL RLS, or UI-06 live integration.
+No application code/dependencies, migrations, live resources, commits or pushes.
+
+Task 2 verification (2026-10-20): pure `Chunker`/`Tokenizer` interfaces and
+deterministic source windows implemented; tiktoken 0.14.0 locked with provisional
+cl100k_base encoding. No embedding model selected. See the Task 2 section of
+`contracts/PHASE-0-CONTRACTS.md` for offsets, fingerprint and resource semantics.
+Focused tests: 34 passed. Full offline backend regression: 179 passed, 27 skipped,
+3 existing warnings. PostgreSQL suites were explicitly disabled; no live verification
+claimed. `uv lock --check --offline` and scoped diff checks passed.
+Learning: `docs/learning/PHASE-3-TASK-2-EXPLAINED.md`.
+NO-GO for dimension-specific Task 3 migration until embedding provider/model,
+dimension and tokenizer compatibility are validated. No schema or live changes.
 
 ### Phase 4: Publishing, embed delivery, and visitor chat (5-6 days)
 

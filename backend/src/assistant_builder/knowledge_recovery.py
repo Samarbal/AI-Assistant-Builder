@@ -24,16 +24,22 @@ def utc(value):
 
 
 def phase2_schema_guard(session):
-    """Fail closed on schema evolution; replace with reference checks before publishing."""
+    """Fail closed unless the reviewed Phase 2 + versioned-index schema is present."""
     catalog = inspect(session.connection())
     if set(catalog.get_table_names(schema='public')) != {
-            'alembic_version', 'assistants', 'knowledge_files', 'knowledge_file_text'}:
+            'alembic_version', 'assistants', 'knowledge_files', 'knowledge_file_text',
+            'knowledge_indexes', 'knowledge_index_sources', 'knowledge_index_batches',
+            'knowledge_chunks'}:
         raise RecoveryBlocked('Schema changed; reference-aware cleanup review required')
     # Frozen baseline, intentionally not derived from evolving ORM models.
     expected_columns = {
-        'assistants': set('id owner_id name role colors response_style tone fallback_message state created_at updated_at'.split()),
+        'assistants': set('id owner_id name role colors response_style tone fallback_message state created_at updated_at active_knowledge_index_id'.split()),
         'knowledge_files': set('id owner_id assistant_id slot_number original_filename file_format size_bytes content_sha256 object_key processing_state error_code operation_id lease_expires_at removed_at cleanup_state cleanup_attempts cleanup_error_code created_at updated_at'.split()),
         'knowledge_file_text': set('file_id assistant_id owner_id extracted_text extraction_version created_at'.split()),
+        'knowledge_indexes': set('id owner_id assistant_id version idempotency_key manifest_sha256 embedding_provider embedding_model vector_dimension tokenizer_version chunker_version state operation_id lease_expires_at total_chunks completed_chunks reserved_cost_microusd error_code created_at updated_at ready_at'.split()),
+        'knowledge_index_sources': set('index_id file_id assistant_id owner_id extraction_version source_sha256'.split()),
+        'knowledge_index_batches': set('id index_id assistant_id owner_id batch_number idempotency_key request_sha256 chunk_ids reserved_tokens reserved_cost_microusd state operation_id lease_expires_at attempts actual_tokens error_code created_at updated_at'.split()),
+        'knowledge_chunks': set('id index_id owner_id assistant_id file_id ordinal extraction_version chunker_version source_sha256 start_offset end_offset token_count text_sha256 chunk_text embedding'.split()),
     }
     if catalog.get_view_names(schema='public'):
         raise RecoveryBlocked('Schema changed; reference-aware cleanup review required')
@@ -46,6 +52,10 @@ def phase2_schema_guard(session):
             FROM pg_class WHERE oid=to_regclass(:table)'''), {'table': 'public.' + name})
         if protected is not True:
             raise RecoveryBlocked('Owner RLS boundary differs from the approved baseline')
+    vector_schema = session.scalar(text('''SELECT n.nspname FROM pg_extension e
+        JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='vector' '''))
+    if vector_schema != 'public':
+        raise RecoveryBlocked('pgvector schema differs from the reviewed index baseline')
 
 
 def action_for(item, now):

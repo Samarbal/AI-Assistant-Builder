@@ -34,7 +34,7 @@ export function AssistantLayout() {
   return <div className={styles.page}><nav className={styles.tabs} aria-label="Assistant sections">
     <NavLink to="configuration" className={({ isActive }) => isActive ? styles.activeTab : ''}>Configuration</NavLink>
     <NavLink to="knowledge" className={({ isActive }) => isActive ? styles.activeTab : ''}>Knowledge</NavLink>
-    <button disabled>Playground <Badge>Planned</Badge></button>
+    <NavLink to="playground" className={({ isActive }) => isActive ? styles.activeTab : ''}>Playground</NavLink>
     <button disabled>Publish <Badge>Planned</Badge></button>
   </nav><Outlet /></div>
 }

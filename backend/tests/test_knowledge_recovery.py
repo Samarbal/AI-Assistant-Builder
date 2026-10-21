@@ -226,3 +226,38 @@ def test_real_guard_rejects_schema_or_security_drift(monkeypatch, drift):
     session = SimpleNamespace(connection=lambda: None, scalar=lambda *args, **kwargs: drift != 'unsafe-rls')
     with pytest.raises(RecoveryBlocked):
         phase2_schema_guard(session)
+
+
+def test_real_guard_accepts_exact_phase3_index_schema(monkeypatch):
+    from assistant_builder.knowledge_recovery import phase2_schema_guard
+    from assistant_builder.models import Base
+    names = ['alembic_version', 'assistants', 'knowledge_files', 'knowledge_file_text',
+             'knowledge_indexes', 'knowledge_index_sources', 'knowledge_index_batches',
+             'knowledge_chunks']
+    catalog = SimpleNamespace(
+        get_table_names=lambda **kwargs: names,
+        get_columns=lambda name, **kwargs: [{'name': column} for column in Base.metadata.tables[name].columns.keys()],
+        get_view_names=lambda **kwargs: [],
+    )
+    protected_count = 7
+    values = iter([True] * protected_count + ['public'])
+    session = SimpleNamespace(connection=lambda: None, scalar=lambda *args, **kwargs: next(values))
+    monkeypatch.setattr('assistant_builder.knowledge_recovery.inspect', lambda connection: catalog)
+    phase2_schema_guard(session)
+
+
+def test_real_guard_rejects_unreviewed_vector_schema(monkeypatch):
+    from assistant_builder.knowledge_recovery import phase2_schema_guard
+    from assistant_builder.models import Base
+    names = ['alembic_version', 'assistants', 'knowledge_files', 'knowledge_file_text',
+             'knowledge_indexes', 'knowledge_index_sources', 'knowledge_index_batches',
+             'knowledge_chunks']
+    catalog = SimpleNamespace(
+        get_table_names=lambda **kwargs: names,
+        get_columns=lambda name, **kwargs: [{'name': column} for column in Base.metadata.tables[name].columns.keys()],
+        get_view_names=lambda **kwargs: [],
+    )
+    session = SimpleNamespace(connection=lambda: None, scalar=lambda *args, **kwargs: True)
+    monkeypatch.setattr('assistant_builder.knowledge_recovery.inspect', lambda connection: catalog)
+    with pytest.raises(RecoveryBlocked, match='pgvector schema'):
+        phase2_schema_guard(session)

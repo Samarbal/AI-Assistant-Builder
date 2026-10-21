@@ -6,6 +6,10 @@ import styles from './shell.module.css'
 import { useAuth } from '../auth/context'
 
 function Navigation({ mobile = false, onNavigate }: { mobile?: boolean; onNavigate?: () => void }) {
+  const location = useLocation()
+  const assistantId = /^\/assistants\/([^/]+)(?:\/|$)/.exec(location.pathname)?.[1]
+  const playgroundTo = assistantId && assistantId !== 'new'
+    ? `/assistants/${encodeURIComponent(assistantId)}/playground` : null
   const links: { to: string; label: string; icon: IconName }[] = [
     { to: '/assistants', label: mobile ? 'Home' : 'Dashboard', icon: mobile ? 'homeMobile' : 'dashboard' },
     { to: '/assistants/new', label: 'New assistant', icon: mobile ? 'botMobile' : 'bot' },
@@ -15,7 +19,9 @@ function Navigation({ mobile = false, onNavigate }: { mobile?: boolean; onNaviga
       className={({ isActive }) => `${styles.navItem} ${isActive ? styles.active : ''}`}>
       <Icon name={link.icon} /><span>{link.label}</span>
     </NavLink>)}
-    <button className={styles.navItem} disabled><Icon name={mobile ? 'sparklesMobile' : 'sparkles'} /><span>Playground</span><Badge>Planned</Badge></button>
+    {playgroundTo
+      ? <NavLink to={playgroundTo} end onClick={onNavigate} className={({ isActive }) => `${styles.navItem} ${isActive ? styles.active : ''}`}><Icon name={mobile ? 'sparklesMobile' : 'sparkles'} /><span>Playground</span></NavLink>
+      : <button className={styles.navItem} disabled><Icon name={mobile ? 'sparklesMobile' : 'sparkles'} /><span>Playground</span><Badge>Planned</Badge></button>}
     <button className={styles.navItem} disabled><Icon name={mobile ? 'messagesMobile' : 'messages'} /><span>{mobile ? 'Inbox' : 'Conversations'}</span><Badge>Planned</Badge></button>
   </nav>
 }

@@ -7,7 +7,29 @@ export type KnowledgeFile = {
   size_bytes: number; processing_state: string; error_code: string | null; created_at: string
 }
 export type DownloadLink = { download_url: string; expires_in: number }
+export type PreparationStatus = {
+  readiness: 'no_knowledge' | 'needs_preparation' | 'preparing' | 'ready' | 'failed' | 'blocked'
+  operation_id: string | null; completed_chunks: number; total_chunks: number
+  eligible_files: number; next_action: 'prepare' | 'continue' | 'retry' | null; reason: string | null
+}
 export class KnowledgeError extends Error {}
+
+function parsePreparation(value: unknown): PreparationStatus {
+  if (!value || typeof value !== 'object') throw new KnowledgeError('Preparation status was invalid. Refresh status and try again.')
+  const data = value as Partial<PreparationStatus>
+  const states = ['no_knowledge', 'needs_preparation', 'preparing', 'ready', 'failed', 'blocked']
+  const actions = ['prepare', 'continue', 'retry']
+  if (!states.includes(String(data.readiness)) || !Number.isInteger(data.completed_chunks) ||
+      (data.completed_chunks ?? -1) < 0 || !Number.isInteger(data.total_chunks) ||
+      (data.total_chunks ?? -1) < 0 || !Number.isInteger(data.eligible_files) ||
+      (data.eligible_files ?? -1) < 0 || (data.eligible_files ?? 6) > MAX_FILES ||
+      (data.operation_id !== null && typeof data.operation_id !== 'string') ||
+      (data.next_action !== null && !actions.includes(String(data.next_action))) ||
+      (data.reason !== null && typeof data.reason !== 'string')) {
+    throw new KnowledgeError('Preparation status was invalid. Refresh status and try again.')
+  }
+  return data as PreparationStatus
+}
 
 export function validateFile(file: File): string | null {
   if (!/\.(pdf|docx)$/i.test(file.name) || file.name.length > 255) return 'Choose a PDF or DOCX file with a filename of at most 255 characters.'
@@ -55,5 +77,51 @@ export function knowledgeApi(store: AuthStore, assistantId: string, signal: Abor
     upload: (file: File) => { const body = new FormData(); body.append('file', file); return request<KnowledgeFile>('', 'POST', body) },
     remove: (id: string) => request<void>(`/${encodeURIComponent(id)}`, 'DELETE'),
     download: (id: string) => request<DownloadLink>(`/${encodeURIComponent(id)}/download-url`, 'POST'),
+  }
+}
+
+export function preparationApi(store: AuthStore, assistantId: string, signal: AbortSignal) {
+  const { session, epoch } = store.snapshot()
+  const owner = session?.user.id
+  const current = () => !!owner && store.snapshot().session?.user.id === owner &&
+    store.snapshot().epoch === epoch && !signal.aborted
+  const check = () => { if (!current()) throw new KnowledgeError('Session changed. Please sign in again.') }
+  async function request(path: '/status' | '/prepare', body?: { operation_id?: string }): Promise<PreparationStatus> {
+    check()
+    const token = await store.accessToken(owner!, epoch)
+    check()
+    const response = await fetch(`/api/assistants/${encodeURIComponent(assistantId)}/playground${path}`, {
+      method: body ? 'POST' : 'GET', cache: 'no-store',
+      signal: AbortSignal.any([signal, AbortSignal.timeout(120000)]),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    check()
+    if (response.status === 401) { void store.logout(); throw new KnowledgeError('Your session expired. Please sign in again.') }
+    if (!response.ok) {
+      let code = ''
+      try { const payload = await response.json() as { detail?: { code?: unknown } }; if (typeof payload.detail?.code === 'string') code = payload.detail.code } catch { /* Ignore untrusted response details. */ }
+      check()
+      const errors: Record<string, string> = {
+        knowledge_not_ready: 'Wait for all uploaded files to finish processing, then refresh status.',
+        preparation_busy: 'Knowledge preparation is already running. Refresh its status before continuing.',
+        preparation_request_already_used: 'This request was already processed. Refresh status before continuing.',
+        index_cost_limit: 'This knowledge set exceeds the current AI credit limit.',
+        embedding_provider_failure: 'The embedding service failed. Refresh status before retrying.',
+        embedding_invalid_output: 'The embedding service returned invalid data. Refresh status before retrying.',
+      }
+      throw new KnowledgeError(errors[code] ?? (response.status === 404
+        ? 'Assistant not found.' : 'Knowledge preparation failed. Refresh its status before retrying.'))
+    }
+    const data = parsePreparation(await response.json())
+    check()
+    return data
+  }
+  return {
+    status: () => request('/status'),
+    prepare: (operationId?: string) => request('/prepare', operationId ? { operation_id: operationId } : {}),
   }
 }

@@ -5,19 +5,85 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider } from '../src/auth/AuthProvider'
 import { AuthStore } from '../src/auth/store'
 import { AppRoutes } from '../src/app/routes'
-import { knowledgeApi, validateFile } from '../src/knowledge/api'
+import { knowledgeApi, preparationApi, validateFile, type PreparationStatus } from '../src/knowledge/api'
 import { authPort, session } from './auth-fixtures'
 import { knowledgeFile } from './knowledge-fixture'
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
-function app() {
+function withPreparationStatus(fetchKnowledge: typeof fetch) {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/playground/status')) return Promise.resolve(json(prep('needs_preparation', 'prepare')))
+    return fetchKnowledge(input, init)
+  })
+}
+const prep = (readiness: PreparationStatus['readiness'], next_action: PreparationStatus['next_action']): PreparationStatus => ({
+  readiness, operation_id: readiness === 'preparing' ? 'operation-123' : null,
+  completed_chunks: readiness === 'preparing' ? 1 : 0, total_chunks: 3,
+  eligible_files: 1, next_action, reason: null,
+})
+function app(routePreparation = true) {
+  if (routePreparation) vi.stubGlobal('fetch', withPreparationStatus(globalThis.fetch))
   const auth = authPort(session())
   const store = new AuthStore(auth.port)
   render(<AuthProvider store={store}><MemoryRouter initialEntries={['/assistants/example/knowledge']}><AppRoutes /></MemoryRouter></AuthProvider>)
   return { auth, store }
 }
 describe('knowledge UX', () => {
+  it('prepares one batch on explicit request and exposes progress without auto-spending credits', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(json([knowledgeFile]))
+      .mockResolvedValueOnce(json(prep('needs_preparation', 'prepare')))
+      .mockResolvedValueOnce(json(prep('preparing', 'continue'), 202))
+    vi.stubGlobal('fetch', fetch); app(false)
+    await screen.findByText('1 of 5 files')
+    expect(await screen.findByRole('button', { name: 'Prepare knowledge' })).toBeEnabled()
+    expect(screen.getByText(/uses AI embedding credits/i)).toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledTimes(2)
+    await userEvent.click(screen.getByRole('button', { name: 'Prepare knowledge' }))
+    expect(await screen.findByText('Progress saved: 1 of 3 chunks. Select Continue to process the next batch.')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Knowledge preparation progress' })).toHaveAttribute('value', '1')
+    expect(fetch).toHaveBeenCalledTimes(3)
+    const [url, init] = fetch.mock.calls[2] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/assistants/example/playground/prepare')
+    expect(init.method).toBe('POST')
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer test-token-owner-a', 'Idempotency-Key': expect.any(String) })
+    expect(JSON.parse(String(init.body))).toEqual({})
+    expect(screen.getByRole('button', { name: 'Continue preparation' })).toBeEnabled()
+  })
+
+  it('continues the same operation with a fresh idempotency key and handles a safe preparation error', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(json([knowledgeFile]))
+      .mockResolvedValueOnce(json(prep('preparing', 'continue')))
+      .mockResolvedValueOnce(json({ detail: { code: 'embedding_provider_failure', message: 'private provider detail' } }, 503))
+    vi.stubGlobal('fetch', fetch); app(false)
+    await userEvent.click(await screen.findByRole('button', { name: 'Continue preparation' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('embedding service failed')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('private provider detail')
+    const [, init] = fetch.mock.calls[2] as unknown as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toEqual({ operation_id: 'operation-123' })
+    expect(init.headers).toMatchObject({ 'Idempotency-Key': expect.any(String) })
+  })
+
+  it('logs out safely on an expired preparation session', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(json([knowledgeFile])).mockResolvedValueOnce(json(prep('needs_preparation', 'prepare')))
+      .mockResolvedValueOnce(json({}, 401))
+    vi.stubGlobal('fetch', fetch); app(false)
+    await userEvent.click(await screen.findByRole('button', { name: 'Prepare knowledge' }))
+    expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not offer automatic retry after an uncertain paid provider attempt', async () => {
+    const uncertain = { ...prep('failed', null), reason: 'A previous embedding attempt needs operator review before retrying.' }
+    const fetch = vi.fn().mockResolvedValueOnce(json([knowledgeFile])).mockResolvedValueOnce(json(uncertain))
+    vi.stubGlobal('fetch', fetch); app(false)
+    expect(await screen.findByText(/operator review before retrying/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry preparation' })).not.toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
   it('shows states, metadata, and disables downloads until text is extracted', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json([knowledgeFile, { ...knowledgeFile, id: 'two', original_filename: 'Failed.docx', processing_state: 'failed', error_code: 'invalid_document' }, { ...knowledgeFile, id: 'three', original_filename: 'Pending.pdf', processing_state: 'processing' }])))
     app()
@@ -111,6 +177,17 @@ describe('knowledge UX', () => {
     await waitFor(() => expect(complete).toBeDefined())
     act(() => auth.emit(session('owner-b'))); complete(json([knowledgeFile]))
     await expect(response).rejects.toThrow('Session changed'); stop()
+  })
+  it('sends authenticated preparation status without caching', async () => {
+    const auth = authPort(session()); const store = new AuthStore(auth.port); const stop = store.start()
+    await waitFor(() => expect(store.snapshot().session).not.toBeNull())
+    vi.stubGlobal('fetch', vi.fn(async () => json(prep('ready', null))))
+    const result = await preparationApi(store, 'assistant', new AbortController().signal).status()
+    expect(result.readiness).toBe('ready')
+    expect(fetch).toHaveBeenCalledWith('/api/assistants/assistant/playground/status', expect.objectContaining({
+      method: 'GET', cache: 'no-store', headers: { Authorization: 'Bearer test-token-owner-a' },
+    }))
+    stop()
   })
   it.each([404, 409, 413, 503])('reports HTTP %s without exposing server details', async status => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ detail: 'DO NOT DISPLAY' }, status)))

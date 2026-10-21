@@ -1,5 +1,6 @@
 import { AssistantList, AssistantEditor } from '../assistants/Assistants'
 import { KnowledgeFiles } from '../knowledge/KnowledgeFiles'
+import { Playground } from '../playground/Playground'
 import { Navigate, Route, Routes } from 'react-router'
 import { Shell } from './Shell'
 import { Overview, AssistantLayout } from '../pages/Pages'
@@ -20,6 +21,7 @@ export function AppRoutes() {
       <Route index element={<Navigate to="configuration" replace />} />
       <Route path="configuration" element={<AssistantEditor key="edit" />} />
       <Route path="knowledge" element={<KnowledgeFiles />} />
+      <Route path="playground" element={<Playground />} />
     </Route>
     </Route></Route>
     <Route path="*" element={<main style={{ padding: 32 }}><h1>Page not found</h1><Link to="/assistants">Go to your dashboard</Link></main>} />

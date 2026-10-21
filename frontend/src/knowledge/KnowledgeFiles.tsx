@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 import { useAuth } from '../auth/context'
 import { Alert, Badge, Button, Card, LoadingState } from '../components/ui'
-import { knowledgeApi, knowledgeError, KnowledgeError, MAX_FILES, validateFile, type KnowledgeFile } from './api'
+import { knowledgeApi, preparationApi, knowledgeError, KnowledgeError, MAX_FILES, validateFile, type KnowledgeFile, type PreparationStatus } from './api'
 import styles from './knowledge.module.css'
 import uploadIcon from '../assets/icons/knowledge-upload.svg'
 import fileIcon from '../assets/icons/knowledge-file.svg'
@@ -46,11 +46,15 @@ function FileManager({ assistantId }: { assistantId: string }) {
   const [busy, setBusy] = useState('')
   const [confirm, setConfirm] = useState<string | null>(null)
   const [link, setLink] = useState<SignedLink | null>(null)
+  const [preparation, setPreparation] = useState<PreparationStatus | null>(null)
+  const [preparationError, setPreparationError] = useState('')
+  const [preparationLoading, setPreparationLoading] = useState(true)
   const input = useRef<HTMLInputElement>(null)
   const removeTrigger = useRef<HTMLButtonElement | null>(null)
   const filesHeading = useRef<HTMLHeadingElement>(null)
   const controller = useRef<AbortController | null>(null)
   const locked = useRef(false)
+  const preparationLocked = useRef(false)
 
   useEffect(() => {
     const active = new AbortController(); controller.current = active
@@ -58,6 +62,10 @@ function FileManager({ assistantId }: { assistantId: string }) {
       if (!active.signal.aborted) { setFiles(data); setVerified(true) }
     }).catch(e => { if (!active.signal.aborted) setError(knowledgeError(e)) })
       .finally(() => { if (!active.signal.aborted) setLoading(false) })
+    void preparationApi(store, assistantId, active.signal).status().then(data => {
+      if (!active.signal.aborted) { setPreparation(data); setPreparationError('') }
+    }).catch(e => { if (!active.signal.aborted) setPreparationError(knowledgeError(e)) })
+      .finally(() => { if (!active.signal.aborted) setPreparationLoading(false) })
     return () => active.abort()
   }, [assistantId, store])
 
@@ -93,7 +101,14 @@ function FileManager({ assistantId }: { assistantId: string }) {
     finally {
       // Upload/removal may have committed even if their response was lost. Never retry them automatically.
       if (action !== 'download' && !active.signal.aborted) {
-        try { const data = await api.list(); if (!active.signal.aborted) { setFiles(data); setVerified(true) } }
+        try {
+          const data = await api.list()
+          if (!active.signal.aborted) { setFiles(data); setVerified(true) }
+          if (action === 'upload' || action === 'remove' || action === 'refresh') {
+            const state = await preparationApi(store, assistantId, active.signal).status()
+            if (!active.signal.aborted) { setPreparation(state); setPreparationError('') }
+          }
+        }
         catch { if (!active.signal.aborted) { setVerified(false); setError(previous => `${previous ? `${previous} ` : ''}Could not refresh files. Refresh the list before another operation.`) } }
       }
       locked.current = false
@@ -104,9 +119,58 @@ function FileManager({ assistantId }: { assistantId: string }) {
     }
   }
 
+  async function prepareKnowledge() {
+    if (preparationLocked.current || !controller.current || !preparation || !preparation.next_action) return
+    const active = controller.current
+    preparationLocked.current = true
+    setBusy('prepare'); setPreparationError('')
+    try {
+      const result = await preparationApi(store, assistantId, active.signal).prepare(
+        preparation.next_action === 'continue' ? preparation.operation_id ?? undefined : undefined)
+      if (!active.signal.aborted) setPreparation(result)
+    } catch (e) {
+      if (!active.signal.aborted) setPreparationError(knowledgeError(e))
+    } finally {
+      preparationLocked.current = false
+      if (!active.signal.aborted) setBusy('')
+    }
+  }
+
+  async function refreshPreparation() {
+    if (!controller.current || preparationLocked.current) return
+    const active = controller.current
+    preparationLocked.current = true
+    setPreparationError('')
+    try { const result = await preparationApi(store, assistantId, active.signal).status(); if (!active.signal.aborted) setPreparation(result) }
+    catch (e) { if (!active.signal.aborted) setPreparationError(knowledgeError(e)) }
+    finally { preparationLocked.current = false }
+  }
+
   return <section className={styles.page}>
     <header><h1>Knowledge files</h1><p>Teach it what you know. Add your business documents to this assistant’s draft.</p></header>
     <div className={styles.layout}><div className={styles.page}>
+      <Card className={styles.prepareCard}>
+        <div className={styles.row}><div><h2>Prepare assistant knowledge</h2><p>Prepare extracted files for semantic search in the Playground.</p></div>
+          {preparation && <Badge>{preparation.readiness.replaceAll('_', ' ')}</Badge>}
+        </div>
+        <p className={styles.creditNotice}>Preparation uses AI embedding credits. Each request processes one bounded batch; the backend enforces the per-index cost limit. Do not repeat a request while its status is updating.</p>
+        {preparationLoading ? <LoadingState label="Checking preparation status…" /> : null}
+        {preparationError && <Alert kind="error">{preparationError}</Alert>}
+        {preparation && <>
+          {preparation.readiness === 'ready' && <Alert>Knowledge is prepared and ready for the Playground.</Alert>}
+          {preparation.readiness === 'no_knowledge' && <p>Upload at least one successfully extracted file before preparing knowledge.</p>}
+          {preparation.readiness === 'blocked' && <Alert>{preparation.reason ?? 'Files are not ready yet. Refresh after processing completes.'}</Alert>}
+          {preparation.readiness === 'failed' && <Alert kind="error">{preparation.reason ?? 'Preparation failed. Refresh status before retrying.'}</Alert>}
+          {preparation.readiness === 'needs_preparation' && preparation.reason && <Alert>{preparation.reason}</Alert>}
+          {preparation.readiness === 'preparing' && <div aria-live="polite"><p>Progress saved: {preparation.completed_chunks} of {preparation.total_chunks} chunks. Select Continue to process the next batch.</p><progress aria-label="Knowledge preparation progress" max={Math.max(1, preparation.total_chunks)} value={preparation.completed_chunks} /></div>}
+          {preparation.next_action && <div className={styles.actions}>
+            <Button busy={busy === 'prepare'} disabled={preparationLoading || !!busy || !verified || files.length === 0 || files.some(file => file.processing_state !== 'extracted')} onClick={() => void prepareKnowledge()}>
+              {preparation.next_action === 'continue' ? 'Continue preparation' : preparation.next_action === 'retry' ? 'Retry preparation' : 'Prepare knowledge'}
+            </Button>
+            {preparation.readiness === 'preparing' && <Button variant="secondary" disabled={!!busy} onClick={() => void refreshPreparation()}>Refresh status</Button>}
+          </div>}
+        </>}
+      </Card>
       <div className={styles.dropzone} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); choose(event.dataTransfer.files) }}>
         <span className={styles.uploadIcon}><img src={uploadIcon} alt="" /></span>
         <strong>Drop one file here, or browse files</strong><p>PDF or DOCX · Up to 5 files · 10 MB per file</p>
@@ -117,7 +181,7 @@ function FileManager({ assistantId }: { assistantId: string }) {
         {full && <p>Five files attached. Remove a file before uploading another. Failed files also count.</p>}
       </div>
       {error && <Alert kind="error">{error}</Alert>}{notice && <Alert>{notice}</Alert>}
-      {busy && <LoadingState label={busy === 'upload' ? 'Uploading and extracting text…' : busy === 'remove' ? 'Removing attachment…' : busy === 'download' ? 'Preparing private download…' : 'Refreshing files…'} />}
+      {busy && <LoadingState label={busy === 'upload' ? 'Uploading and extracting text…' : busy === 'remove' ? 'Removing attachment…' : busy === 'download' ? 'Preparing private download…' : busy === 'prepare' ? 'Preparing one embedding batch…' : 'Refreshing files…'} />}
       <Card className={styles.card}><div className={styles.row}><h2 ref={filesHeading} tabIndex={-1}>Attached files</h2><Badge>{verified ? `${files.length} of 5 files` : 'List not confirmed'}</Badge><Button variant="secondary" disabled={loading || !!busy} onClick={() => void run('refresh')}>Refresh files</Button></div>
         {loading ? <LoadingState label="Loading knowledge files…" /> : verified && files.length === 0 ? <p>No knowledge files yet. Upload a PDF or DOCX to get started.</p> : null}
         {!verified && !loading && <p>File status is unavailable. Refresh before uploading, downloading or removing files.</p>}

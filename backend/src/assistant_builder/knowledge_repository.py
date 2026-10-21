@@ -45,7 +45,10 @@ class KnowledgeRepository:
                 or lease_expires_at.tzinfo is None
                 or lease_expires_at <= datetime.now(timezone.utc)):
             raise ValueError('Invalid reservation metadata')
-        self._assistant(owner_id, assistant_id)
+        assistant = self._assistant(owner_id, assistant_id)
+        # Any draft attachment change invalidates the old semantic corpus pointer.
+        # The immutable index rows remain for recovery/inspection; they are not active.
+        assistant.active_knowledge_index_id = None
         occupied = set(self.session.scalars(select(KnowledgeFile.slot_number).where(
             KnowledgeFile.owner_id == owner_id, KnowledgeFile.assistant_id == assistant_id,
             KnowledgeFile.removed_at.is_(None))))
@@ -101,6 +104,8 @@ class KnowledgeRepository:
         if not extracted_text.strip() or not extraction_version or len(extraction_version) > 64:
             raise ValueError('Nonempty text and extraction version required')
         row = self._operation(owner_id, assistant_id, file_id, operation_id, {'processing'})
+        assistant = self._assistant(owner_id, assistant_id)
+        assistant.active_knowledge_index_id = None
         self.session.add(KnowledgeFileText(file_id=file_id, assistant_id=assistant_id,
             owner_id=owner_id, extracted_text=extracted_text, extraction_version=extraction_version))
         row.processing_state = 'extracted'
@@ -117,9 +122,10 @@ class KnowledgeRepository:
         self.session.flush()
 
     def remove(self, owner_id, assistant_id, file_id):
-        self._assistant(owner_id, assistant_id)
+        assistant = self._assistant(owner_id, assistant_id)
         row = self.get_for_owner(owner_id, assistant_id, file_id, include_removed=True, lock=True)
         if row.removed_at is None:
+            assistant.active_knowledge_index_id = None
             row.removed_at = datetime.now(timezone.utc)
             row.slot_number = None
             row.cleanup_state = 'pending'
