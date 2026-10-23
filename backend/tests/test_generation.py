@@ -21,7 +21,7 @@ def settings(**changes):
 
 def result(answer="Returns within 14 days.", citations=None):
     if citations is None:
-        citations = [{"chunk_id": str(SOURCE.chunk_id), "excerpt": "Returns within 14 days."}]
+        citations = ["E1"]
     return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
         "answer": answer, "citations": citations})}}]}
 
@@ -43,16 +43,45 @@ def test_answers_and_server_metadata(answer, caplog):
         assert "reasoning_format" not in payload
         assert payload["model"] == "openai/gpt-oss-20b"
         assert payload["response_format"]["type"] == "json_schema"
-        assert payload["response_format"]["json_schema"]["strict"] is False
+        assert payload["response_format"]["json_schema"]["strict"] is True
+        schema = payload["response_format"]["json_schema"]["schema"]
+        assert schema["required"] == ["answer", "citations"]
+        assert schema["additionalProperties"] is False
+        assert schema["properties"]["citations"]["items"] == {"type": "string"}
+        user_content = json.loads(payload["messages"][1]["content"])
+        assert user_content["evidence"] == [{"key": "E1", "text": SOURCE.text}]
+        assert str(SOURCE.chunk_id) not in payload["messages"][1]["content"]
         return httpx.Response(200, json=result(answer))
     output = run(handler)
     assert output.answer == answer
     assert output.outcome == "grounded"
     assert output.citations[0].file_id == SOURCE.file_id
     assert output.citations[0].filename == SOURCE.filename
+    assert output.citations[0].chunk_id == SOURCE.chunk_id
+    assert output.citations[0].excerpt == SOURCE.text[:600].strip()
     assert len(requests) == 1
     assert "test-secret" not in caplog.text
     assert answer not in repr(output)
+
+
+def test_short_evidence_key_resolves_to_exact_source_and_server_excerpt():
+    second = Evidence(uuid4(), uuid4(), "cv.docx", "Academic program: Data Science. " + "x" * 700)
+    seen_payload = {}
+
+    def handler(request):
+        payload = json.loads(request.content)
+        seen_payload.update(json.loads(payload["messages"][1]["content"]))
+        return httpx.Response(200, json=result("Studied Data Science.", ["E2"]))
+
+    output = run(handler, evidence=(SOURCE, second))
+
+    assert [item["key"] for item in seen_payload["evidence"]] == ["E1", "E2"]
+    assert output.citations[0].file_id == second.file_id
+    assert output.citations[0].chunk_id == second.chunk_id
+    assert output.citations[0].filename == second.filename
+    assert output.citations[0].excerpt == second.text[:600].strip()
+    assert output.citations[0].excerpt in second.text
+    assert len(output.citations[0].excerpt) <= 600
 
 
 def test_no_evidence_exact_local_fallback():
@@ -87,22 +116,47 @@ def test_errors_no_retries(status, code):
 
 
 @pytest.mark.parametrize("citations,code", [
-    ([], "generation_output_invalid_schema"),
-    ([{"chunk_id": str(uuid4()), "excerpt": "Returns"}], "generation_output_invalid_citation"),
-    ([{"chunk_id": str(SOURCE.chunk_id), "excerpt": "Lifetime warranty"}], "generation_output_invalid_citation"),
-    ([{"chunk_id": str(SOURCE.chunk_id), "excerpt": " "}], "generation_output_invalid_citation"),
-    ([{"chunk_id": str(SOURCE.chunk_id), "excerpt": "Returns", "page": 1}], "generation_output_invalid_schema"),
-    ([{"chunk_id": str(SOURCE.chunk_id), "excerpt": "Returns"}] * 2, "generation_output_invalid_citation"),
+    (["E99"], "generation_output_invalid_citation"),
+    (["E1", "E1"], "generation_output_invalid_citation"),
+    ([1], "generation_output_invalid_schema"),
+    ([{"key": "E1"}], "generation_output_invalid_schema"),
 ])
 def test_reject_fabricated_or_malformed_citations(citations, code):
     with pytest.raises(GenerationFailure, match=code):
         run(lambda req: httpx.Response(200, json=result(citations=citations)))
 
 
-def test_unsupported_claim_cannot_invent_support():
-    with pytest.raises(GenerationFailure, match="generation_output_invalid_citation"):
-        run(lambda req: httpx.Response(200, json=result("Lifetime warranty.", [
-            {"chunk_id": str(SOURCE.chunk_id), "excerpt": "Lifetime warranty."}])))
+def test_empty_citations_return_exact_configured_fallback():
+    generated_abstention = "Model generated text is ignored."
+    answer = run(lambda req: httpx.Response(200, json=result(
+        answer=generated_abstention, citations=[])))
+    assert answer == Answer(BEHAVIOR.fallback_message, "fallback", ())
+    assert generated_abstention not in repr(answer)
+
+
+@pytest.mark.parametrize("payload", [
+    {"answer": "answer"},
+    {"citations": []},
+    {"answer": 42, "citations": []},
+    {"answer": "answer", "citations": [1]},
+    {"answer": "answer", "citations": [], "unexpected": True},
+], ids=["missing-citations", "missing-answer", "wrong-answer-type", "missing-reference-field", "extra-field"])
+def test_invalid_output_schema_is_rejected(payload):
+    body = {"choices": [{"finish_reason": "stop", "message": {
+        "content": json.dumps(payload)}}]}
+    with pytest.raises(GenerationFailure, match="generation_output_invalid_schema"):
+        run(lambda req: httpx.Response(200, json=body))
+
+
+@pytest.mark.parametrize("payload", [
+    {"answer": "", "citations": ["E1"]},
+    {"answer": "answer", "citations": ["E1"] * 6},
+], ids=["blank-grounded-answer", "too-many-citations"])
+def test_grounded_output_bounds_remain_enforced(payload):
+    body = {"choices": [{"finish_reason": "stop", "message": {
+        "content": json.dumps(payload)}}]}
+    with pytest.raises(GenerationFailure, match="generation_output_invalid_schema"):
+        run(lambda req: httpx.Response(200, json=body))
 
 
 def test_semantic_entailment_not_claimed_by_citation_validation():
@@ -119,7 +173,7 @@ def test_injection_stays_in_untrusted_data_not_system():
         assert injection not in payload["messages"][0]["content"]
         data = json.loads(payload["messages"][1]["content"])
         assert injection in data["evidence"][0]["text"]
-        return httpx.Response(200, json=result(citations=[{"chunk_id": str(uuid4()), "excerpt": "fake"}]))
+        return httpx.Response(200, json=result(citations=["E99"]))
     with pytest.raises(GenerationFailure, match="generation_output_invalid_citation"):
         run(handler, question=injection, evidence=(source,))
 
@@ -158,6 +212,39 @@ def test_input_bounds_before_dispatch(question, evidence):
         pytest.fail("Input limits must reject before dispatch")
     with pytest.raises(GenerationFailure, match="generation_input_limit"):
         run(never, question=question, evidence=evidence)
+
+
+@pytest.mark.parametrize("question,evidence,expected_guard", [
+    ("ط§" * 501, (SOURCE,), "question_bytes"),
+    ("Question", (Evidence(uuid4(), uuid4(), "private.docx", "x" * 3001),), "evidence_bytes"),
+    ("Question", (Evidence(uuid4(), uuid4(), "private.docx", '"' * 2800),),
+     "assembled_prompt_bytes"),
+])
+def test_input_limit_logs_only_sanitized_sizes(question, evidence, expected_guard, monkeypatch):
+    private_question = question
+    private_text = evidence[0].text
+    records = []
+    monkeypatch.setattr("assistant_builder.generation.logger.warning",
+                        lambda message, *, extra: records.append((message, extra)))
+
+    with pytest.raises(GenerationFailure, match="generation_input_limit"):
+        run(lambda req: pytest.fail("input guard must reject before provider dispatch"),
+            question=question, evidence=evidence)
+
+    message, record = records[-1]
+    assert message.startswith("generation_input_limit_diagnostic {")
+    assert record["input_limit_stage"] == "generation"
+    assert record["input_limit_guard"] == expected_guard
+    assert record["question_bytes"] == len(question.encode("utf-8"))
+    assert record["top_chunk_bytes"] == len(private_text.encode("utf-8"))
+    assert record["evidence_bytes"] == len(private_text.encode("utf-8"))
+    assert isinstance(record["assembled_prompt_bytes"], int)
+    assert record["input_limits"]["max_question_bytes"] == 1000
+    assert record["input_limits"]["max_evidence_bytes"] == 3000
+    assert record["input_limits"]["max_assembled_prompt_bytes"] == 6000
+    assert private_question not in message + repr(record)
+    assert private_text not in message + repr(record)
+    assert "private.docx" not in message + repr(record)
 
 
 @pytest.mark.parametrize("url", ["http://api.groq.com/openai/v1", "https://other.test/openai/v1",

@@ -88,6 +88,158 @@ def test_grounded_flow_passes_only_server_retrieved_evidence(database):
     assert retriever.calls[0] == (owner, ids[0], "What is the return policy?", 5)
 
 
+def test_valid_generation_abstention_returns_exact_configured_fallback(database):
+    sessions, owner, _, ids = database
+    index_id = uuid4()
+    source = chunk()
+    with sessions.begin() as session:
+        assistant = session.get(Assistant, ids[0])
+        assistant.active_knowledge_index_id = index_id
+        fallback = assistant.fallback_message
+
+    class AbstainingGenerator:
+        async def generate(self, behavior, question, evidence):
+            assert evidence
+            # The real adapter discards this generated string and returns the
+            # configured fallback; this fake models that adapter contract.
+            return Answer(behavior.fallback_message, "fallback", ())
+
+    orchestrator = RagOrchestrator(
+        sessions, FakeRetriever(RetrievalResult("matches", (source,), index_id)),
+        AbstainingGenerator())
+    answer = asyncio.run(orchestrator.answer(owner, ids[0], "What is unsupported?"))
+
+    assert answer == Answer(fallback, "fallback", ())
+
+
+def test_rag_rejects_nonconfigured_fallback_from_generator(database):
+    sessions, owner, _, ids = database
+    index_id = uuid4()
+    source = chunk()
+    with sessions.begin() as session:
+        session.get(Assistant, ids[0]).active_knowledge_index_id = index_id
+
+    class ForgedFallbackGenerator:
+        async def generate(self, behavior, question, evidence):
+            return Answer("untrusted generated abstention", "fallback", ())
+
+    orchestrator = RagOrchestrator(
+        sessions, FakeRetriever(RetrievalResult("matches", (source,), index_id)),
+        ForgedFallbackGenerator())
+    with pytest.raises(RagFailure, match="generation_invalid_output"):
+        asyncio.run(orchestrator.answer(owner, ids[0], "What is unsupported?"))
+
+
+def _answer_for_first_evidence(evidence):
+    source = evidence[0]
+    excerpt = source.text[:min(32, len(source.text))]
+    return Answer("Supported answer", "grounded", (
+        Citation(source.file_id, source.chunk_id, source.filename, excerpt),
+    ))
+
+
+def _run_with_sources(database, sources, *, question="What is supported?", behavior=None):
+    sessions, owner, _, ids = database
+    index_id = uuid4()
+    with sessions.begin() as session:
+        assistant = session.get(Assistant, ids[0])
+        assistant.active_knowledge_index_id = index_id
+        if behavior is not None:
+            assistant.role, assistant.tone, assistant.response_style = behavior
+    retriever = FakeRetriever(RetrievalResult("matches", tuple(sources), index_id))
+    generator = FakeGenerator(answer_factory=_answer_for_first_evidence)
+    answer = asyncio.run(RagOrchestrator(sessions, retriever, generator).answer(
+        owner, ids[0], question))
+    return answer, generator
+
+
+def test_context_packing_keeps_whole_highest_ranked_chunks_and_skips_oversized_addition(database):
+    first = chunk(text="Returns are accepted within 14 days." + "a" * 1960, score=0.99)
+    too_large_to_add = chunk(text="b" * 1500, score=0.95)
+    third = chunk(text="c" * 150, score=0.90)
+    _, generator = _run_with_sources(database, (first, too_large_to_add, third))
+
+    sent = generator.calls[0][2]
+    assert [item.chunk_id for item in sent] == [first.chunk_id, third.chunk_id]
+    assert sent[0].text == first.text
+    assert sent[1].text == third.text
+
+
+def test_context_packing_uses_utf8_bytes_without_truncating_arabic_chunks(database):
+    first = chunk(text="ا" * 1250, score=0.99)  # 2,500 UTF-8 bytes
+    second = chunk(text="ب" * 400, score=0.95)  # does not fit after the first
+    third = chunk(text="ج" * 100, score=0.90)
+    _, generator = _run_with_sources(database, (first, second, third))
+
+    sent = generator.calls[0][2]
+    assert [item.chunk_id for item in sent] == [first.chunk_id, third.chunk_id]
+    assert sent[0].text == first.text
+    assert sent[1].text == third.text
+
+
+def test_context_packing_fails_without_generation_when_top_chunk_exceeds_evidence_budget(
+        database, monkeypatch):
+    records = []
+    monkeypatch.setattr("assistant_builder.generation.logger.warning",
+                        lambda message, *, extra: records.append((message, extra)))
+    sessions, owner, _, ids = database
+    index_id = uuid4()
+    with sessions.begin() as session:
+        session.get(Assistant, ids[0]).active_knowledge_index_id = index_id
+    source = chunk(text="x" * 3001, score=0.99)
+    retriever, generator = FakeRetriever(RetrievalResult("matches", (source,), index_id)), FakeGenerator()
+
+    with pytest.raises(RagFailure) as error:
+        asyncio.run(RagOrchestrator(sessions, retriever, generator).answer(owner, ids[0], "question"))
+
+    assert error.value.code == "generation_input_limit"
+    assert error.value.fallback_message == sessions().get(Assistant, ids[0]).fallback_message
+    assert generator.calls == []
+    message, record = records[-1]
+    assert message.startswith("generation_input_limit_diagnostic {")
+    assert record["input_limit_stage"] == "rag_packing"
+    assert record["input_limit_guard"] == "top_chunk_evidence_bytes"
+    assert record["question_bytes"] == len(b"question")
+    assert record["top_chunk_bytes"] == 3001
+    assert record["evidence_bytes"] == 3001
+    assert isinstance(record["assembled_prompt_bytes"], int)
+    assert record["input_limits"]["max_evidence_bytes"] == 3000
+    assert record["input_limits"]["max_assembled_prompt_bytes"] == 6000
+    assert source.text not in message + repr(record)
+    assert source.filename not in message + repr(record)
+
+
+def test_context_packing_accounts_for_json_prompt_expansion(database):
+    sessions, owner, _, ids = database
+    index_id = uuid4()
+    with sessions.begin() as session:
+        session.get(Assistant, ids[0]).active_knowledge_index_id = index_id
+    # Quotes fit the evidence-byte cap but expand when JSON escaped in the prompt.
+    source = chunk(text='"' * 2500, score=0.99)
+    retriever, generator = FakeRetriever(RetrievalResult("matches", (source,), index_id)), FakeGenerator()
+
+    with pytest.raises(RagFailure) as error:
+        asyncio.run(RagOrchestrator(sessions, retriever, generator).answer(owner, ids[0], "question"))
+
+    assert error.value.code == "generation_input_limit"
+    assert generator.calls == []
+
+
+def test_context_packing_fails_when_question_exceeds_byte_budget_without_provider_call(database):
+    sessions, owner, _, ids = database
+    index_id = uuid4()
+    with sessions.begin() as session:
+        session.get(Assistant, ids[0]).active_knowledge_index_id = index_id
+    source = chunk()
+    retriever, generator = FakeRetriever(RetrievalResult("matches", (source,), index_id)), FakeGenerator()
+
+    with pytest.raises(RagFailure, match="generation_input_limit"):
+        asyncio.run(RagOrchestrator(sessions, retriever, generator).answer(
+            owner, ids[0], "ا" * 501))
+
+    assert generator.calls == []
+
+
 @pytest.mark.parametrize("state", ["no_knowledge", "no_relevant_chunks"])
 def test_no_evidence_returns_exact_fallback_without_generation(database, state):
     sessions, owner, _, ids = database

@@ -106,14 +106,19 @@ Future workflow acceptance remains owned by Phases 3–5.
 
 ### Phase 3: Response orchestration and optional playground (5-6 days)
 
-Status: Phase 3 implementation is in progress. Versioned indexing, semantic
-retrieval, RAG orchestration, authenticated Playground API/UI, and indexing
-preparation controls are implemented locally. Retrieval calibration succeeded
-with four known-answer and three unknown-answer questions; the resulting local
-`RETRIEVAL_MIN_SIMILARITY` is `0.30347`. The Playground is not ready for acceptance:
-the latest reported request failed with `generation_input_limit`. Diagnose and
-verify that failure before marking Playground ready or Phase 3 complete. The UI-06
-live smoke-test gate also remains pending.
+Status: Phase 3 implementation is complete for the MVP workflow and ready for
+review. Versioned indexing, semantic retrieval, RAG orchestration, authenticated
+Playground API/UI, and indexing preparation controls are implemented. Retrieval
+calibration succeeded with four known-answer and three unknown-answer questions;
+the local `RETRIEVAL_MIN_SIMILARITY` is `0.30347`. A developer-reported live
+frontend smoke test completed six consecutive Playground requests with HTTP 200.
+This is limited verification, not evidence of broader reliability. Known
+limitations include approximately 9–14 second Playground latency, no semantic
+entailment guarantee from citation validation, and skipped PostgreSQL integration
+tests when dedicated database configuration is unavailable. Metadata-only
+`generation_input_limit` diagnostics now identify the rejecting stage and guard;
+they have not yet been verified against a new live failure. No production
+readiness or wider reliability claim is made.
 
 Required MVP work:
 
@@ -156,6 +161,26 @@ that file and local calibration artifacts are excluded from Git. Focused offline
 retrieval/calibration tests passed (27 passed). No provider calls or database
 changes were made during this local threshold update. Playground acceptance remains
 blocked by the reported `generation_input_limit` error; Phase 3 is not complete.
+
+Phase 3 final review update (2026-10-23): the implementation now emits sanitized
+byte-size diagnostics for RAG packing and generation input-limit guards. The
+diagnostic contains only stage, guard, question/top-chunk/evidence/assembled-prompt
+byte counts, and configured limits; it excludes question text, document text,
+embeddings, credentials, and generated answers. Limits and response behavior are
+unchanged. Focused tests passed (66); the full offline backend suite passed (422)
+with 28 PostgreSQL integration tests skipped because dedicated PostgreSQL test
+configuration was unavailable. The known six-request HTTP 200 smoke result and
+9–14 second latency are developer-reported; no live provider or database request
+was made for this update. Phase 3 implementation is complete for review, with
+broader reliability, latency improvement, and semantic entailment verification
+remaining limitations rather than claims of production readiness. If
+`generation_input_limit` recurs, inspect the sanitized stage/guard metrics before
+changing limits or evidence handling. Frontend verification for this review:
+Vitest 61 passed; lint, typecheck, and production build passed. All 23 Playwright
+scenarios reported success, but the runner did not exit cleanly after the final
+scenario and was interrupted during teardown, so browser-suite process completion
+remains unverified. The production build retains the existing >500 kB JavaScript
+chunk warning.
 
 Task 1 recommendations (not accepted ADR amendments): explicit preparation endpoint
 instead of message-triggered indexing; operational limits and budget accounting in

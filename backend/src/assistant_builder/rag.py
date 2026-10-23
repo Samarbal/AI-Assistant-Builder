@@ -8,13 +8,93 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .db import set_owner_identity
 from .generation import (
-    Answer, AnswerGenerator, Behavior, Citation, Evidence, GenerationFailure, Usage,
-    answer_from_evidence,
+    Answer, AnswerGenerator, Behavior, Citation, Evidence, GenerationFailure, SYSTEM, Usage,
+    _input_limit_diagnostic, answer_from_evidence,
 )
 from .models import Assistant
 from .retrieval import (
     MAX_RETRIEVAL_TOP_K, RetrievalFailure, RetrievalResult, RetrievedChunk, Retriever,
 )
+
+
+# Keep these packing limits aligned with GroqAnswerGenerator's fail-safe guards.
+# The adapter remains authoritative and still rejects any input that exceeds them.
+_GENERATION_QUESTION_BYTES = 1000
+_GENERATION_EVIDENCE_BYTES = 3000
+_GENERATION_PROMPT_BYTES = 6000
+_GENERATION_FRAMING_RESERVE_BYTES = 512
+
+
+def _generation_budget_guard(behavior: Behavior, question: str,
+                             evidence: tuple[Evidence, ...]) -> tuple[str | None, dict[str, int]]:
+    """Mirror provider guards and return content-free measurements for diagnostics."""
+    size = lambda text: len(text.encode("utf-8"))
+    question_bytes = size(question) if isinstance(question, str) else 0
+    evidence_texts = tuple(item.text for item in evidence
+                           if isinstance(item, Evidence) and isinstance(item.text, str))
+    top_chunk_bytes = size(evidence_texts[0]) if evidence_texts else 0
+    evidence_bytes = sum(size(text) for text in evidence_texts)
+    assembled_prompt_bytes = 0
+    if (isinstance(question, str) and all(isinstance(value, str) for value in
+            (behavior.role, behavior.tone, behavior.response_style))
+            and len(evidence_texts) == len(evidence)):
+        content = json.dumps({"question": question, "evidence": [
+            {"chunk_id": str(item.chunk_id), "text": item.text} for item in evidence]}, ensure_ascii=False)
+        instructions = SYSTEM + "\nAssistant behavior: " + json.dumps({
+            "role": behavior.role, "tone": behavior.tone, "style": behavior.response_style}, ensure_ascii=False)
+        assembled_prompt_bytes = size(content) + size(instructions)
+
+    measurements = {
+        "question_bytes": question_bytes,
+        "top_chunk_bytes": top_chunk_bytes,
+        "evidence_bytes": evidence_bytes,
+        "assembled_prompt_bytes": assembled_prompt_bytes,
+    }
+    if (not evidence or len(evidence) > MAX_RETRIEVAL_TOP_K
+            or not question.strip() or len(question) > 4000
+            or len({item.chunk_id for item in evidence}) != len(evidence)):
+        return "request_shape", measurements
+    if question_bytes > _GENERATION_QUESTION_BYTES:
+        return "question_bytes", measurements
+    if evidence_bytes > _GENERATION_EVIDENCE_BYTES:
+        return "evidence_bytes", measurements
+    if assembled_prompt_bytes + _GENERATION_FRAMING_RESERVE_BYTES > _GENERATION_PROMPT_BYTES:
+        return "assembled_prompt_bytes", measurements
+    return None, measurements
+
+
+def _fits_generation_budget(behavior: Behavior, question: str,
+                            evidence: tuple[Evidence, ...]) -> bool:
+    """Mirror the provider's current input guards using its exact prompt format."""
+    guard, _ = _generation_budget_guard(behavior, question, evidence)
+    return guard is None
+
+
+def _pack_evidence(behavior: Behavior, question: str,
+                   evidence: tuple[Evidence, ...]) -> tuple[Evidence, ...]:
+    """Select whole chunks greedily in retrieval rank order; never truncate text."""
+    top_candidate = (evidence[0],) if evidence else ()
+    guard, measurements = _generation_budget_guard(behavior, question, top_candidate)
+    if guard is not None:
+        _input_limit_diagnostic(
+            "rag_packing", f"top_chunk_{guard}", **measurements,
+            limits={
+                "max_evidence_items": MAX_RETRIEVAL_TOP_K,
+                "max_question_chars": 4000,
+                "max_question_bytes": _GENERATION_QUESTION_BYTES,
+                "max_evidence_bytes": _GENERATION_EVIDENCE_BYTES,
+                "max_assembled_prompt_bytes": _GENERATION_PROMPT_BYTES,
+                "framing_reserve_bytes": _GENERATION_FRAMING_RESERVE_BYTES,
+            },
+        )
+        raise RagFailure("generation_input_limit", behavior.fallback_message)
+
+    selected = [evidence[0]]
+    for item in evidence[1:]:
+        candidate = (*selected, item)
+        if _fits_generation_budget(behavior, question, candidate):
+            selected.append(item)
+    return tuple(selected)
 
 
 class RagFailure(Exception):
@@ -102,14 +182,20 @@ class RagOrchestrator:
             raise RagFailure("retrieval_invalid_output") from None
 
     @staticmethod
-    def _validate_answer(answer: Answer, evidence: tuple[Evidence, ...]) -> None:
-        if (not isinstance(answer, Answer) or answer.outcome != "grounded"
-                or not isinstance(answer.answer, str) or not answer.answer.strip()
-                or not isinstance(answer.citations, tuple)):
+    def _validate_answer(answer: Answer, evidence: tuple[Evidence, ...],
+                         behavior: Behavior) -> None:
+        if (not isinstance(answer, Answer) or answer.outcome not in {"grounded", "fallback"}
+                or not isinstance(answer.answer, str) or not isinstance(answer.citations, tuple)):
+            raise RagFailure("generation_invalid_output")
+        if answer.outcome == "fallback":
+            if answer.answer != behavior.fallback_message or answer.citations:
+                raise RagFailure("generation_invalid_output")
+        elif not answer.answer.strip():
             raise RagFailure("generation_invalid_output")
         available = {item.chunk_id: item for item in evidence}
         citations = answer.citations
-        if not citations or len(citations) > MAX_RETRIEVAL_TOP_K:
+        if ((answer.outcome == "grounded" and not citations)
+                or len(citations) > MAX_RETRIEVAL_TOP_K):
             raise RagFailure("generation_invalid_output")
         seen = set()
         for citation in citations:
@@ -161,6 +247,7 @@ class RagOrchestrator:
             raise RagFailure("knowledge_not_ready", snapshot.behavior.fallback_message)
 
         evidence = self._evidence(result.chunks)
+        evidence = _pack_evidence(snapshot.behavior, question, evidence)
         # Avoid paying for generation if the draft/index changed after retrieval.
         self._assert_current(snapshot, index_id=result.index_id)
         try:
@@ -170,7 +257,7 @@ class RagOrchestrator:
         except Exception:
             raise RagFailure("generation_unavailable", snapshot.behavior.fallback_message) from None
         try:
-            self._validate_answer(answer, evidence)
+            self._validate_answer(answer, evidence, snapshot.behavior)
         except RagFailure as exc:
             raise RagFailure(exc.code, snapshot.behavior.fallback_message) from None
         # A configuration or source change during generation invalidates answer
