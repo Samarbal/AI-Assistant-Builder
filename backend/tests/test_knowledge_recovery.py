@@ -122,6 +122,23 @@ def test_future_reference_guard_or_key_mismatch_stops_before_storage(recovery):
     assert not deleted
 
 
+def test_published_source_reference_blocks_physical_cleanup(recovery):
+    from assistant_builder.models import Assistant
+    tool, _, owner, assistant, _, item, deleted, _ = recovery
+    item.removed_at = datetime.now(timezone.utc) - timedelta(minutes=20)
+    item.object_key = f'owners/{owner}/assistants/{assistant}/files/{item.id}/original.{item.file_format}'
+
+    class ReferencedSource:
+        def __init__(self): self.calls = 0
+        def scalar(self, _statement):
+            self.calls += 1
+            return SimpleNamespace(state='draft') if self.calls == 1 else uuid4()
+
+    with pytest.raises(RecoveryBlocked, match='retained by a published snapshot'):
+        tool.validate(ReferencedSource(), owner, assistant, item)
+    assert not deleted
+
+
 def test_storage_failure_retry_uses_same_key_and_new_claim(recovery):
     tool, _, owner, assistant, sessions, item, deleted, clock = recovery
     operation = removed(recovery)
@@ -228,20 +245,37 @@ def test_real_guard_rejects_schema_or_security_drift(monkeypatch, drift):
         phase2_schema_guard(session)
 
 
-def test_real_guard_accepts_exact_phase3_index_schema(monkeypatch):
+def test_real_guard_accepts_exact_phase4_schema(monkeypatch):
     from assistant_builder.knowledge_recovery import phase2_schema_guard
     from assistant_builder.models import Base
     names = ['alembic_version', 'assistants', 'knowledge_files', 'knowledge_file_text',
              'knowledge_indexes', 'knowledge_index_sources', 'knowledge_index_batches',
-             'knowledge_chunks']
+             'knowledge_chunks', 'assistant_publications', 'published_snapshots',
+             'published_sources', 'publication_requests', 'visitor_conversations', 'visitor_turns']
+    accounting = ['price_versions', 'budget_days', 'budget_operations', 'budget_attempts', 'budget_day_holds']
+    accounting_columns = {
+        'price_versions': 'id provider model input_microusd_per_million output_microusd_per_million embedding_microusd_per_million message_cap_microusd index_cap_microusd daily_cap_microusd valid_from valid_until',
+        'budget_days': 'day_utc held_microusd charged_microusd',
+        'budget_operations': 'id caller_role scope_sha256 kind price_version operation_cap_microusd held_microusd charged_microusd state created_at',
+        'budget_attempts': 'id operation_id caller_role scope_sha256 price_version request_sha256 kind model max_input_tokens max_output_tokens held_microusd charged_microusd state created_at dispatched_at settled_at input_tokens output_tokens',
+        'budget_day_holds': 'attempt_id day_utc held_microusd charged_microusd',
+    }
     catalog = SimpleNamespace(
-        get_table_names=lambda **kwargs: names,
-        get_columns=lambda name, **kwargs: [{'name': column} for column in Base.metadata.tables[name].columns.keys()],
+        get_table_names=lambda **kwargs: names if kwargs.get('schema') == 'public' else accounting,
+        get_columns=lambda name, **kwargs: [{'name': column} for column in (accounting_columns[name].split() if kwargs.get('schema') == 'ai_accounting' else Base.metadata.tables[name].columns.keys())],
         get_view_names=lambda **kwargs: [],
     )
-    protected_count = 7
-    values = iter([True] * protected_count + ['public'])
-    session = SimpleNamespace(connection=lambda: None, scalar=lambda *args, **kwargs: next(values))
+    protected_count = len(names) - 1 + len(accounting)
+    values = iter([True] * protected_count + [False, False, 'public'])
+    class Result:
+        def __init__(self, row): self.row = row
+        def one_or_none(self): return self.row
+    def execute(statement, *args, **kwargs):
+        sql = str(statement)
+        if 'assistant_public_runtime' in sql: return Result((True,False,False,False,False,False,False))
+        if 'assistant_budget_executor' in sql: return Result((False,False,False,False,False,False,False))
+        return Result(None)
+    session = SimpleNamespace(connection=lambda: None, scalar=lambda *args, **kwargs: next(values), execute=execute)
     monkeypatch.setattr('assistant_builder.knowledge_recovery.inspect', lambda connection: catalog)
     phase2_schema_guard(session)
 
@@ -251,13 +285,31 @@ def test_real_guard_rejects_unreviewed_vector_schema(monkeypatch):
     from assistant_builder.models import Base
     names = ['alembic_version', 'assistants', 'knowledge_files', 'knowledge_file_text',
              'knowledge_indexes', 'knowledge_index_sources', 'knowledge_index_batches',
-             'knowledge_chunks']
+             'knowledge_chunks', 'assistant_publications', 'published_snapshots',
+             'published_sources', 'publication_requests', 'visitor_conversations', 'visitor_turns']
+    accounting = ['price_versions', 'budget_days', 'budget_operations', 'budget_attempts', 'budget_day_holds']
+    accounting_columns = {
+        'price_versions': 'id provider model input_microusd_per_million output_microusd_per_million embedding_microusd_per_million message_cap_microusd index_cap_microusd daily_cap_microusd valid_from valid_until',
+        'budget_days': 'day_utc held_microusd charged_microusd',
+        'budget_operations': 'id caller_role scope_sha256 kind price_version operation_cap_microusd held_microusd charged_microusd state created_at',
+        'budget_attempts': 'id operation_id caller_role scope_sha256 price_version request_sha256 kind model max_input_tokens max_output_tokens held_microusd charged_microusd state created_at dispatched_at settled_at input_tokens output_tokens',
+        'budget_day_holds': 'attempt_id day_utc held_microusd charged_microusd',
+    }
     catalog = SimpleNamespace(
-        get_table_names=lambda **kwargs: names,
-        get_columns=lambda name, **kwargs: [{'name': column} for column in Base.metadata.tables[name].columns.keys()],
+        get_table_names=lambda **kwargs: names if kwargs.get('schema') == 'public' else accounting,
+        get_columns=lambda name, **kwargs: [{'name': column} for column in (accounting_columns[name].split() if kwargs.get('schema') == 'ai_accounting' else Base.metadata.tables[name].columns.keys())],
         get_view_names=lambda **kwargs: [],
     )
-    session = SimpleNamespace(connection=lambda: None, scalar=lambda *args, **kwargs: True)
+    class Result:
+        def __init__(self, row): self.row = row
+        def one_or_none(self): return self.row
+    def execute(statement, *args, **kwargs):
+        sql = str(statement)
+        if 'assistant_public_runtime' in sql: return Result((True,False,False,False,False,False,False))
+        if 'assistant_budget_executor' in sql: return Result((False,False,False,False,False,False,False))
+        return Result(None)
+    values = iter([True] * (len(names)-1+len(accounting)) + [False,False,'extensions'])
+    session = SimpleNamespace(connection=lambda: None, scalar=lambda *args, **kwargs: next(values), execute=execute)
     monkeypatch.setattr('assistant_builder.knowledge_recovery.inspect', lambda connection: catalog)
     with pytest.raises(RecoveryBlocked, match='pgvector schema'):
         phase2_schema_guard(session)

@@ -7,9 +7,15 @@ class UploadBodyLimit:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope['type'] != 'http' or scope['method'] != 'POST' or not scope['path'].rstrip('/').endswith('/knowledge-files'):
+        if scope['type'] != 'http' or scope['method'] != 'POST':
             return await self.app(scope, receive, send)
-        limit = 10_000_000 + 65_536
+        path = scope['path'].rstrip('/')
+        if path.endswith('/knowledge-files'):
+            limit = 10_000_000 + 65_536
+        elif path.startswith('/public/assistants/'):
+            limit = 16_384
+        else:
+            return await self.app(scope, receive, send)
         received = 0
         async def limited_receive():
             nonlocal received

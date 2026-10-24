@@ -11,6 +11,15 @@ class Settings(BaseSettings):
 
     app_name: str = "AI Assistant Builder API"
     database_url: str | None = Field(default=None, repr=False)
+    # Separate least-privilege public role; there is intentionally no owner-DB fallback.
+    public_database_url: str | None = Field(default=None, repr=False)
+    public_chat_enabled: bool = False
+    # Comma-separated SHA-256 digests for at most two demo access tokens.
+    public_demo_token_sha256: str | None = Field(default=None, repr=False)
+    public_rate_limit_per_minute: int = Field(default=30, ge=1, le=30)
+    public_max_concurrent: int = Field(default=2, ge=1, le=2)
+    public_global_max_concurrent: int = Field(default=4, ge=1, le=4)
+    public_rate_key_capacity: int = Field(default=4096, ge=32, le=4096)
     environment: str = "development"
     ai_base_url: str | None = Field(default=None, repr=False)
     ai_api_key: SecretStr | None = Field(default=None, repr=False)
@@ -31,6 +40,7 @@ class Settings(BaseSettings):
     supabase_storage_key: str | None = Field(default=None, repr=False)
     supabase_storage_bucket: str = 'knowledge-files'
     storage_signed_url_seconds: int = Field(default=60, ge=1, le=300)
+    widget_asset_origin: str | None = None
 
 
 @lru_cache

@@ -254,3 +254,122 @@ class KnowledgeChunk(Base):
     text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[tuple[float, ...]] = mapped_column(Vector768(), nullable=False)
+
+
+class AssistantPublication(Base):
+    """Stable public handle and active immutable snapshot pointer."""
+    __tablename__ = "assistant_publications"
+    __table_args__ = (
+        ForeignKeyConstraint(["assistant_id", "owner_id"], ["assistants.id", "assistants.owner_id"], name="fk_publication_assistant_owner"),
+        UniqueConstraint("public_id"), UniqueConstraint("assistant_id", "owner_id"),
+        ForeignKeyConstraint(["active_snapshot_id", "assistant_id", "owner_id"],
+            ["published_snapshots.id", "published_snapshots.assistant_id", "published_snapshots.owner_id"],
+            name="fk_publication_active_snapshot", use_alter=True),
+        Index("ix_publication_owner_assistant", "owner_id", "assistant_id"),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True, default=uuid4)
+    public_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False, default=uuid4)
+    assistant_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    active_snapshot_id: Mapped[UUID | None] = mapped_column(Uuid())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class PublishedSnapshot(Base):
+    __tablename__ = "published_snapshots"
+    __table_args__ = (
+        ForeignKeyConstraint(["assistant_id", "owner_id"], ["assistants.id", "assistants.owner_id"], name="fk_snapshot_assistant_owner"),
+        UniqueConstraint("id", "assistant_id", "owner_id"),
+        UniqueConstraint("assistant_id", "owner_id", "version"),
+        CheckConstraint("version > 0", name="ck_snapshot_version"),
+        CheckConstraint("state = 'published'", name="ck_snapshot_state"),
+        CheckConstraint("(knowledge_index_id IS NULL) = (source_count = 0)", name="ck_snapshot_empty_manifest"),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True, default=uuid4)
+    assistant_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(12), nullable=False, server_default="published")
+    config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    draft_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    knowledge_index_id: Mapped[UUID | None] = mapped_column(Uuid())
+    embedding_provider: Mapped[str | None] = mapped_column(String(32))
+    embedding_model: Mapped[str | None] = mapped_column(String(100))
+    vector_dimension: Mapped[int | None] = mapped_column(Integer)
+    retrieval_min_similarity: Mapped[float | None] = mapped_column()
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    build_xid: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=func.txid_current())
+
+
+class PublishedSource(Base):
+    __tablename__ = "published_sources"
+    __table_args__ = (
+        ForeignKeyConstraint(["snapshot_id", "assistant_id", "owner_id"], ["published_snapshots.id", "published_snapshots.assistant_id", "published_snapshots.owner_id"], name="fk_published_source_snapshot"),
+        ForeignKeyConstraint(["index_id", "assistant_id", "owner_id"], ["knowledge_indexes.id", "knowledge_indexes.assistant_id", "knowledge_indexes.owner_id"], name="fk_published_source_index"),
+        ForeignKeyConstraint(["index_id", "file_id", "assistant_id", "owner_id"], ["knowledge_index_sources.index_id", "knowledge_index_sources.file_id", "knowledge_index_sources.assistant_id", "knowledge_index_sources.owner_id"], name="fk_published_source_index_file"),
+        UniqueConstraint("snapshot_id", "file_id"),
+    )
+    snapshot_id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    file_id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True)
+    assistant_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    index_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    extraction_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class PublicationRequest(Base):
+    __tablename__ = "publication_requests"
+    __table_args__ = (ForeignKeyConstraint(["assistant_id", "owner_id"], ["assistants.id", "assistants.owner_id"]),)
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True, default=uuid4)
+    assistant_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class VisitorConversation(Base):
+    __tablename__ = "visitor_conversations"
+    __table_args__ = (
+        ForeignKeyConstraint(["assistant_id", "owner_id"], ["assistants.id", "assistants.owner_id"]),
+        ForeignKeyConstraint(["publication_id", "assistant_id", "owner_id"], ["assistant_publications.id", "assistant_publications.assistant_id", "assistant_publications.owner_id"]),
+        UniqueConstraint("id", "publication_id", "owner_id", "assistant_id"),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True, default=uuid4)
+    publication_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    assistant_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    token_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class VisitorTurn(Base):
+    __tablename__ = "visitor_turns"
+    __table_args__ = (
+        ForeignKeyConstraint(["conversation_id", "publication_id", "owner_id", "assistant_id"], ["visitor_conversations.id", "visitor_conversations.publication_id", "visitor_conversations.owner_id", "visitor_conversations.assistant_id"]),
+        ForeignKeyConstraint(["snapshot_id", "assistant_id", "owner_id"], ["published_snapshots.id", "published_snapshots.assistant_id", "published_snapshots.owner_id"]),
+        UniqueConstraint("conversation_id", "request_id"),
+    )
+    id: Mapped[UUID] = mapped_column(Uuid(), primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    publication_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    snapshot_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    assistant_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    owner_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    request_id: Mapped[UUID] = mapped_column(Uuid(), nullable=False)
+    input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_text: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    answer_text: Mapped[str | None] = mapped_column(Text)
+    outcome: Mapped[str | None] = mapped_column(String(16))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

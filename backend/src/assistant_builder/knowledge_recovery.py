@@ -11,7 +11,7 @@ from sqlalchemy import inspect, or_, select, text
 
 from .db import set_owner_identity
 from .knowledge_repository import KnowledgeRepository, KnowledgeStateConflict
-from .models import Assistant, KnowledgeFile
+from .models import Assistant, KnowledgeFile, PublishedSource
 from .storage import StorageUnavailable
 
 
@@ -24,12 +24,17 @@ def utc(value):
 
 
 def phase2_schema_guard(session):
-    """Fail closed unless the reviewed Phase 2 + versioned-index schema is present."""
+    """Fail closed unless the reviewed Phase 2-4 additive schema is present."""
     catalog = inspect(session.connection())
-    if set(catalog.get_table_names(schema='public')) != {
+    expected_public_tables = {
             'alembic_version', 'assistants', 'knowledge_files', 'knowledge_file_text',
             'knowledge_indexes', 'knowledge_index_sources', 'knowledge_index_batches',
-            'knowledge_chunks'}:
+            'knowledge_chunks', 'assistant_publications', 'published_snapshots',
+            'published_sources', 'publication_requests', 'visitor_conversations', 'visitor_turns'}
+    expected_accounting_tables = {'price_versions', 'budget_days', 'budget_operations',
+                                  'budget_attempts', 'budget_day_holds'}
+    if (set(catalog.get_table_names(schema='public')) != expected_public_tables
+            or set(catalog.get_table_names(schema='ai_accounting')) != expected_accounting_tables):
         raise RecoveryBlocked('Schema changed; reference-aware cleanup review required')
     # Frozen baseline, intentionally not derived from evolving ORM models.
     expected_columns = {
@@ -40,6 +45,19 @@ def phase2_schema_guard(session):
         'knowledge_index_sources': set('index_id file_id assistant_id owner_id extraction_version source_sha256'.split()),
         'knowledge_index_batches': set('id index_id assistant_id owner_id batch_number idempotency_key request_sha256 chunk_ids reserved_tokens reserved_cost_microusd state operation_id lease_expires_at attempts actual_tokens error_code created_at updated_at'.split()),
         'knowledge_chunks': set('id index_id owner_id assistant_id file_id ordinal extraction_version chunker_version source_sha256 start_offset end_offset token_count text_sha256 chunk_text embedding'.split()),
+        'assistant_publications': set('id public_id assistant_id owner_id active_snapshot_id created_at updated_at'.split()),
+        'published_snapshots': set('id assistant_id owner_id version state config draft_fingerprint knowledge_index_id embedding_provider embedding_model vector_dimension retrieval_min_similarity manifest_sha256 source_count created_at activated_at build_xid'.split()),
+        'published_sources': set('snapshot_id file_id assistant_id owner_id index_id source_sha256 extraction_version created_at'.split()),
+        'publication_requests': set('id assistant_id owner_id idempotency_key request_sha256 snapshot_id created_at'.split()),
+        'visitor_conversations': set('id publication_id assistant_id owner_id token_sha256 expires_at created_at'.split()),
+        'visitor_turns': set('id conversation_id publication_id snapshot_id assistant_id owner_id request_id input_sha256 user_text state answer_text outcome error_code created_at completed_at'.split()),
+    }
+    accounting_columns = {
+        'price_versions': set('id provider model input_microusd_per_million output_microusd_per_million embedding_microusd_per_million message_cap_microusd index_cap_microusd daily_cap_microusd valid_from valid_until'.split()),
+        'budget_days': set('day_utc held_microusd charged_microusd'.split()),
+        'budget_operations': set('id caller_role scope_sha256 kind price_version operation_cap_microusd held_microusd charged_microusd state created_at'.split()),
+        'budget_attempts': set('id operation_id caller_role scope_sha256 price_version request_sha256 kind model max_input_tokens max_output_tokens held_microusd charged_microusd state created_at dispatched_at settled_at input_tokens output_tokens'.split()),
+        'budget_day_holds': set('attempt_id day_utc held_microusd charged_microusd'.split()),
     }
     if catalog.get_view_names(schema='public'):
         raise RecoveryBlocked('Schema changed; reference-aware cleanup review required')
@@ -52,6 +70,26 @@ def phase2_schema_guard(session):
             FROM pg_class WHERE oid=to_regclass(:table)'''), {'table': 'public.' + name})
         if protected is not True:
             raise RecoveryBlocked('Owner RLS boundary differs from the approved baseline')
+    for name, expected in accounting_columns.items():
+        columns = {column['name'] for column in catalog.get_columns(name, schema='ai_accounting')}
+        if columns != expected:
+            raise RecoveryBlocked('Accounting schema changed; operator review required')
+        protected = session.scalar(text('''SELECT relrowsecurity AND relforcerowsecurity
+            FROM pg_class WHERE oid=to_regclass(:table)'''), {'table': 'ai_accounting.' + name})
+        if protected is not True:
+            raise RecoveryBlocked('Accounting RLS boundary differs from the approved baseline')
+    role_state = session.execute(text('''SELECT rolcanlogin,rolsuper,rolbypassrls,rolinherit,
+        rolcreatedb,rolcreaterole,rolreplication FROM pg_roles
+        WHERE rolname='assistant_public_runtime' ''')).one_or_none()
+    executor_state = session.execute(text('''SELECT rolcanlogin,rolsuper,rolbypassrls,rolinherit,
+        rolcreatedb,rolcreaterole,rolreplication FROM pg_roles
+        WHERE rolname='assistant_budget_executor' ''')).one_or_none()
+    if role_state != (True, False, False, False, False, False, False) or executor_state != (False, False, False, False, False, False, False):
+        raise RecoveryBlocked('P4 runtime role attributes differ from the approved baseline')
+    if session.scalar(text("SELECT has_any_column_privilege('assistant_runtime','ai_accounting.budget_attempts','SELECT') OR has_table_privilege('assistant_runtime','ai_accounting.budget_attempts','SELECT')")):
+        raise RecoveryBlocked('Owner runtime has direct accounting access')
+    if session.scalar(text("SELECT has_any_column_privilege('assistant_public_runtime','ai_accounting.budget_attempts','SELECT') OR has_table_privilege('assistant_public_runtime','ai_accounting.budget_attempts','SELECT')")):
+        raise RecoveryBlocked('Public runtime has direct accounting access')
     vector_schema = session.scalar(text('''SELECT n.nspname FROM pg_extension e
         JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='vector' '''))
     if vector_schema != 'public':
@@ -97,6 +135,11 @@ class KnowledgeRecovery:
         expected = f'owners/{owner}/assistants/{assistant}/files/{item.id}/original.{item.file_format}'
         if item.object_key != expected or item.file_format not in {'pdf', 'docx'}:
             raise RecoveryBlocked('Recorded object identity differs from the expected immutable path')
+        if session.scalar(select(PublishedSource.snapshot_id).where(
+                PublishedSource.owner_id == owner,
+                PublishedSource.assistant_id == assistant,
+                PublishedSource.file_id == item.id).limit(1)) is not None:
+            raise RecoveryBlocked('Knowledge artifact is retained by a published snapshot')
 
     def preview(self, owner, assistant, *, limit=100):
         with self.transaction(owner, readonly=True) as session:
