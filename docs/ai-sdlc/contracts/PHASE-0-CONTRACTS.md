@@ -2,7 +2,7 @@
 
 Status: draft
 
-This document turns the current SPEC-001 requirements and accepted ADRs into implementation contracts. It defines boundaries and observable behavior only; it does not define framework code, database tables, provider SDKs, or infrastructure configuration.
+This document turns the current SPEC-001 requirements and accepted ADRs into implementation contracts. Later phase refinements include persistence/security designs for review; this document does not implement database objects, framework code, provider SDKs or infrastructure configuration.
 
 ## Contract boundaries
 
@@ -80,6 +80,443 @@ Provider base URL, API key, model name, embedding provider, and embedding model 
 | Widget asset delivery | Public widget request | Generic widget request and public identifier | Widget communicates with the FastAPI public chat boundary | Must not expose draft configuration, owner data, provider credentials, or model settings. |
 
 The initial single-instance rate limit is approximately 30 requests per minute per IP/public-assistant pair and remains configurable.
+
+## Phase 4 publishing and visitor contracts (P4-01, 2026-10-23)
+
+Status: P4-01 design documented from explicit conditional approval. Human-approved
+MVP decisions are recorded below; no security design choice remains open.
+These concrete routes refine the inventory above; they are not existing endpoints. Implementation tasks, security decisions,
+tests and rollback gates remain in PLAN-001's Phase 4 section. ADR addenda record
+the approved design without changing prior Phase 1/2 decisions.
+
+### Owner operations
+
+All routes use existing Supabase authentication and the owner runtime transaction
+boundary. The server derives ownership; bodies reject owner IDs, provider settings
+and arbitrary snapshot/index IDs. Cross-owner requests are indistinguishable from
+not-found resources. Keep existing assistant configuration APIs unchanged.
+
+| Proposed route | Request | Success | Failure |
+| --- | --- | --- | --- |
+| GET `/assistants/{id}/publication` | Owner session | `published`, `public_id` (nullable), `version` (nullable), server-generated `draft_fingerprint`, `has_changes`, `readiness` (`ready`, `fallback_only`, `needs_preparation`, `processing`, `failed`) | 401/404; 503 if state cannot be read safely |
+| POST `/assistants/{id}/publication` | `expected_draft_fingerprint`, `expected_published_version` (nullable for first publish); `Idempotency-Key` header | 201 snapshot created, or 200 replay; stable `public_id`, new `version`, `published_at`, updated fingerprint | 409 `draft_changed`, `publication_changed`, `knowledge_not_ready`, `idempotency_conflict`; 422 invalid input; 503 publication unavailable |
+| GET `/assistants/{id}/embed` | Owner session | Generated `snippet` and `public_id`, targeting configured widget asset origin | 409 `not_published`; 401/404 |
+| GET `/assistants/{id}/conversations` | Bounded cursor/limit (proposed default 20, max 100) | `items` with ID and server timestamps, `next_cursor` | 401/404/422 |
+| GET `/assistants/{id}/conversations/{conversation_id}` | Bounded message cursor/limit | Ordered messages with role, text, timestamps, outcome/status and next cursor; only this owner's assistant | 401/404/422 |
+
+Fingerprint is an optimistic concurrency token, not authorization. The publisher
+recomputes and checks it under locking. Replaying an idempotency key with different
+payload returns conflict; replay returns the original result even if later publishes
+exist. The UI refreshes publication status rather than treating that replay as current.
+If the same committed content is already active, return its existing version rather
+than duplicating it. No publication operation invokes embeddings or generation.
+
+Snapshots keep all published behavior and source/index references immutable.
+Draft status, Playground behavior and the five-current-file limit stay independent
+of publication. A first publish never requires Playground use. Zero-file fallback-only
+publication is approved. Processing or failed attachments block publication; all other
+current attachments must belong to the matching ready index.
+
+### Public operations
+
+The public router uses a separately reviewed restricted database context, never
+`CurrentOwner` with an inferred owner ID. The widget uses no Supabase session/key.
+The public assistant identifier is randomly generated, stable across updates and
+unrelated to owner/internal assistant identifiers; possession gives only public access.
+
+| Proposed route | Request | Success | Failure |
+| --- | --- | --- | --- |
+| GET `/widget.js` and `/widget` | Asset request; frame takes public ID | Generic loader/frame assets; no private or provider configuration | Safe unavailable UI if loading fails |
+| GET `/public/assistants/{public_id}` | Public ID only | Only published display name, colors and public version number | Uniform 404 `assistant_unavailable` for unknown/unpublished; 429 if rate-limited |
+| POST `/public/assistants/{public_id}/conversations` | Empty strict object | 201: opaque `conversation_id`, random `conversation_token`, `expires_at` | 404/429/503; no provider call |
+| POST `/public/assistants/{public_id}/conversations/{conversation_id}/messages` | Dedicated visitor-token header; JSON `message`, client-generated `request_id` | 200: `message_id`, `answer`, `outcome` (`grounded`/`fallback`), `created_at`, public `version` | 404 for invalid scope/capability, 409 `request_in_progress`/`request_conflict`/`published_version_changed`, 422 input rejection, 429 rate/budget limit, 503 safe service failure |
+
+Public responses omit raw citation IDs/excerpts/filenames as approved;
+citations are still validated internally against the exact
+packed published evidence. Do not return owner IDs, index manifests, storage paths,
+signed file URLs, prompts, internal exception text, provider names or usage details.
+Only safe text and published visual configuration reach the widget. The owner sees
+a notice that publishing makes answers based on selected knowledge publicly accessible.
+
+### P4-06 widget hosting and CORS boundary
+
+- The existing React/Vite deployment serves `/widget.js` and the `/widget` iframe
+  route. FastAPI does not serve frontend assets. The configured `WIDGET_ASSET_ORIGIN`
+  is the exact origin used by the embed snippet and iframe.
+- FastAPI adds CORS only to `/public/assistants/{public_id}` routes. The allowed
+  origin must exactly equal `WIDGET_ASSET_ORIGIN`; wildcard origins and credentials
+  are not allowed. Preflight permits GET/POST and only `Content-Type`,
+  `X-Demo-Access`, and `X-Visitor-Token`. Owner endpoints do not receive widget CORS.
+- With public chat disabled, the iframe displays an unavailable state. When enabled
+  for the approved demo, a tester types the demo access code into the frame. It is
+  held only in JavaScript memory and sent in `X-Demo-Access`, never in the snippet,
+  query string, local/session storage, or parent page. The returned visitor token
+  is likewise memory-only and sent in `X-Visitor-Token`.
+- A browser integration test embeds the loader from an origin different from the
+  iframe host, and verifies that no token or chat content is passed to the host
+  page. The only iframe-to-host message is a fixed close notification.
+  The loader refuses same-origin embedding because a same-origin host could inspect
+  the iframe DOM despite sandboxing; production widget hosts must use a distinct
+  origin from the configured widget asset origin.
+
+P4-06 implementation status: local owner publishing and conversation history
+screens, static loader, `/widget` iframe UI, and exact-origin public-route CORS are
+implemented. The browser test uses a distinct host origin and controlled HTTP
+responses; this does not enable public chat or verify deployment proxy/CORS settings.
+
+Local verification (2026-10-23): backend full suite passed 458 tests; 39
+PostgreSQL-gated tests were skipped because no disposable integration configuration
+was enabled. Frontend unit tests passed 68 tests across 7 files; lint, TypeScript,
+and production build passed. Playwright reported the individual P4-06 scenarios as
+`ok`, but its process did not exit after the scenarios completed and had to be
+interrupted; treat browser-suite process completion as unresolved. No live Supabase,
+provider, deployment, or public-chat verification was performed. The build reports
+the existing-size warning for the generated JavaScript bundle.
+
+Store only a hash of the high-entropy conversation capability. Bind it to its
+conversation and public assistant; validate before reads/writes and pass only
+server-derived context to the repository. Keep it in frame memory, send it in a
+redacted header, and never log it or put it in a query string/snippet. TTL is 24 hours
+from creation using database UTC time, with no sliding renewal. Expiry ends visitor
+access, not owner history retention. Losing the token starts a new conversation;
+there is no visitor history-list/read endpoint. Owner history does not return tokens.
+No visitor identity, fingerprinting, cross-site tracking, or third-party cookies.
+
+Use independent model turns, with visual/persisted grouping only. Each turn
+resolves the active published snapshot afresh, pins it across retrieval/generation,
+and rechecks under a mapping lock before final persistence. A version change discards
+the generated reply with safe conflict; no automatic retry or mixed-version answer.
+
+### Public request safety and failure contracts
+
+- Validate JSON body size and UTF-8 question size before embedding. Preserve current
+  adapter limits: at most 1,000 question bytes, 3,000 evidence bytes, 6,000 assembled
+  prompt budget including the 512 framing reserve, at most five chunks, and existing
+  output bounds. These conservative byte guards must not be confused with the older
+  proposed token limits elsewhere in this document. Exceeding them does not cause
+  truncation or a relaxed limit. Configure a bounded total HTTP body separately.
+- Check service-enabled, IP/assistant rate, global concurrency and persistent daily
+  cost reservation before paid work. Reuse the configurable ADR-005 30 RPM boundary;
+  initial caps are $0.01/message, $0.10/index and $1/day, conditional on verified
+  provider pricing. The shared accounting privilege mechanism below requires review.
+- An empty published knowledge set returns its exact fallback locally. With indexed
+  knowledge, no relevant matches returns fallback with no generation call; query
+  embedding may already have been billed. Provider failure is 503, not insufficient
+  knowledge. Never leak detailed provider codes to visitors.
+- Request IDs are unique per conversation. Store a durable pending turn before AI
+  I/O; replay of completed identical input returns the saved reply without new calls.
+  Conflicting content is 409. Pending/uncertain attempts never trigger duplicate AI
+  work automatically. A worker crash retains reservation and uncertainty until
+  operator reconciliation; a manual new turn is a separately budgeted request.
+- Commit successful answer/fallback, timestamps and completion status before returning
+  success. If initial persistence fails, do not call providers; if completion persistence
+  fails after a call, return safe failure, retain uncertain cost and do not claim a
+  saved answer. Owner history may show the attempted user turn with failure/pending
+  status but must not display internal errors as assistant answers.
+- Conversation grouping does not pin future turns to old snapshots. New turns after
+  publish use the new active version. Old records retain their original version.
+- Use no-store for mutable public configuration, tokens and chat responses. Static
+  versioned widget assets may be cached; deployment must preserve asset compatibility.
+- No cross-origin owner credentials; separate public and owner route policies. CORS
+  controls browser reads, not authorization or protection against direct HTTP bots.
+  No required per-owner domain setup or new domain-management feature for the MVP.
+- Recovery preserves every retained published source/index reference, including
+  inactive rollback versions. Reference creation and cleanup claims must serialize;
+  publication refuses missing/claimed artifacts. Extend the exact recovery baseline
+  with explicit reviewed objects; retain fail-closed behavior for unexpected schema.
+
+### P4-01 exact security design (design only; no grants applied)
+
+This subsection supersedes unresolved recommendations in the original Phase 4
+proposal. Separate public runtime, durable shared
+reservations, conditional numerical budgets, fallback-only publication, blocking
+processing/failed attachments, 24-hour capabilities, independent turns, no public
+source metadata, isolated iframe and version-change rejection are approved.
+The detailed role/function mechanism below is a design for review before P4-02.
+Object names below are proposed migration contracts, not claims of existing tables.
+
+#### Runtime and policy matrix
+
+`assistant_runtime` remains the verified-owner login. Add
+`assistant_public_runtime` through a separate `PUBLIC_DATABASE_URL`, with no fallback
+to owner/migration credentials. Both are LOGIN, NOSUPERUSER, NOBYPASSRLS, NOCREATEDB,
+NOCREATEROLE, NOREPLICATION, NOINHERIT, own no tables/functions and have no privileged
+role memberships. Grant CONNECT to the application database and USAGE on the
+required schemas, never CREATE. Migration credentials remain operator-only.
+No new runtime DELETE, TRUNCATE, REFERENCES, TRIGGER or schema-wide grants.
+UUID keys require no sequence grants. Existing owner permissions remain unchanged.
+
+All new application tables have ENABLE/FORCE RLS and explicit role-specific policies.
+No grants to PUBLIC, anon, authenticated, or service_role on the new objects, including
+column/default/function grants; inspect inherited privileges too. Do not revoke
+unrelated Supabase privileges or change Auth. The private accounting schema must
+not be exposed through PostgREST. Public HTTP access is through FastAPI only.
+
+Define policy predicates:
+
+- **O(row):** `row.owner_id` equals validated transaction-local `app.owner_id`.
+- **P(mapping):** mapping public ID equals transaction-local `app.public_id` and
+  has a non-null active snapshot. Resolution starts with this public ID only.
+- **S(snapshot):** a P-visible mapping points to that exact snapshot, with matching
+  owner/assistant keys; snapshot ID equals server-pinned `app.snapshot_id`.
+- **R(ref):** its snapshot satisfies S; its index/file/owner/assistant composite
+  keys match the immutable published source manifest.
+- **C(conversation):** its public mapping satisfies P, conversation ID equals
+  `app.conversation_id`, stored token digest equals `app.visitor_token_digest`, and
+  `expires_at > transaction_timestamp()`. C does not require the snapshot at
+  conversation creation to remain active; new turns resolve the current snapshot.
+- **T(turn):** its conversation satisfies C. New turns must also reference S;
+  completion requires the same S as when the turn began.
+
+Context parsers return no match for absent/empty/malformed values; never substitute
+an owner or default ID. Set transaction-local values before queries and test reuse
+after commit/rollback. The raw token is hashed before DB access; digest is sensitive
+too and excluded from SQL-parameter logging. Supabase verifies owner authentication;
+the public token grants only one conversation. Public ID alone grants no history.
+
+| Object | Owner runtime grants and policy | Public runtime grants and policy |
+| --- | --- | --- |
+| Existing assistants/files/text/indexes/sources/batches | Existing owner policies/grants unchanged | None |
+| `assistant_publications` | SELECT, INSERT; UPDATE only `active_snapshot_id`, `updated_at`; O on reads and both write predicates | SELECT only `public_id`, `owner_id`, `assistant_id`, `active_snapshot_id`; P |
+| `published_snapshots` | SELECT, INSERT; O; no UPDATE/DELETE | SELECT only identity keys, version, published configuration/fallback, embedding-space/retrieval configuration; S |
+| `published_sources` | SELECT, INSERT; O; no UPDATE/DELETE | SELECT only snapshot/index/file/owner/assistant keys; R; no frozen filenames |
+| Existing `knowledge_chunks` | Existing owner grants unchanged | SELECT only identity keys, ordinal, offsets, extraction version, chunk text and embedding; EXISTS an R-visible matching source; no INSERT/UPDATE |
+| `publication_requests` | SELECT, INSERT with O; immutable key/fingerprint/result association | None |
+| `visitor_conversations` | SELECT history columns only with O; exclude token digest | SELECT identity/public mapping keys and expiry only, C; INSERT explicit identity/mapping/digest/created/expiry columns, P plus context ID/digest; no UPDATE |
+| `visitor_turns` | SELECT history columns only with O; no writes | SELECT scoped turn fields, T; INSERT request ID, input digest, user text, snapshot keys, pending state and timestamps with T and S; UPDATE only state, answer, outcome, completed timestamp and safe error code with T and final S |
+| Accounting tables | No direct privileges | No direct privileges |
+
+RLS policy dependencies are one-way: mapping -> snapshot -> source -> chunk;
+mapping -> conversation -> turn. No recursive policy joins to drafts or indexes.
+Conversation policy may inspect its digest without granting the runtime permission
+to select the digest column. Server-populated owner IDs for public INSERTs come from
+P, never request input; composite foreign keys and WITH CHECK require matching P.
+The owner-column projection on public mappings is internal DB data, never HTTP data.
+Policies distinguish SELECT/INSERT/UPDATE; every UPDATE has USING and WITH CHECK.
+Owner policies cannot accidentally OR-open public access: roles have no membership
+in each other and public code never uses the owner engine.
+
+Database constraints/guard triggers additionally enforce immutable identity columns,
+non-null/default server timestamps, 24-hour expiry, pending-only turn INSERT,
+one-way terminal turn transitions, immutable completed replies, unique
+conversation/request ID, and composite ownership/snapshot references. They must
+reject direct invalid SQL, not rely only on Python. Failed/version-rejected turn
+finalization may change status/error only after a version switch; it cannot store
+an answer. This needs a separate UPDATE policy branch for that terminal failure,
+without S, but still with T and an immutable pinned snapshot.
+
+Application trust limitation: transaction settings are assertions by trusted
+FastAPI, not cryptographic SQL identities. A compromised public DB credential can
+forge public context and access published evidence; it must still be denied all
+drafts and originals. Forging a valid conversation requires its unpredictable token
+digest. Arbitrary application-code execution compromises both configured engines;
+two roles in one process do not create process isolation. No RLS claim exceeds this.
+
+#### Shared budget boundary — conditionally approved security design
+
+Recommend `ai_accounting` (unexposed schema) with global UTC-day buckets, operation
+envelopes and provider-attempt reservations. Store opaque operation IDs, caller
+role, scope digest, kind, price version, integer micro-USD ceilings/charges, usage
+counts, timestamps and state only. No prompts, answers, filenames, tokens, owner
+profile data or embedding vectors. No tenant table is made globally readable.
+
+Add a **NOLOGIN, NOBYPASSRLS** `assistant_budget_executor` role, not owned/assumable
+by either runtime, not an application-table owner. It has schema USAGE and only
+SELECT/INSERT plus required counter/state UPDATE columns on accounting tables.
+Accounting tables are migration-owned and forced-RLS; policies permit only this
+executor to operate across accounting rows. It has no tenant-table privileges.
+For each accounting table, its policy targets only `assistant_budget_executor`;
+SELECT uses `USING (true)`, INSERT uses `WITH CHECK (true)`, and UPDATE uses both
+`USING (true)` and `WITH CHECK (true)` for the narrow granted columns. No DELETE
+policy/grant exists. The cross-operation accounting policy is intentional, not a
+public/owner policy. RLS applies to the executor's SECURITY DEFINER statements;
+runtime login roles do not inherit its table privileges.
+
+Expose only fixed-signature SECURITY DEFINER functions owned by that executor:
+
+- `reserve_attempt(operation_id UUID, attempt_id UUID, kind TEXT, scope_digest TEXT,
+  price_version UUID, max_input_tokens BIGINT, max_output_tokens BIGINT,
+  request_fingerprint TEXT)`: validates allowed kind/caller, nonnegative bounded
+  token counts and immutable operation identity; computes cost internally and
+  returns reservation ID/state or denial. Public login can use public-message kind
+  only; owner login can use indexing/Playground only. The function recomputes scope
+  from transaction-local owner/assistant context or public/conversation/token-digest
+  context, compares it with `scope_digest`, then stores the recomputed digest. The
+  argument is never authorization by itself. Fingerprint is a digest, not text.
+- `mark_dispatched(attempt_id UUID)`: compare-and-set reserved to dispatched once;
+  checks caller/scope, enabled price version, deadline and covered day budgets.
+- `settle_attempt(attempt_id UUID, input_tokens BIGINT, output_tokens BIGINT)`:
+  compute cost from stored price version, enforce valid counts and caller/scope;
+  idempotent identical settlement, conflict for changed usage. Unknown usage is not
+  zero and must not call this function with fabricated counts.
+- `cancel_undispatched(attempt_id UUID)`: releases only reserved, never dispatched,
+  caller-bound attempts. No general refund/reset API.
+
+Day buckets permit executor UPDATE only on held/charged micro-USD counters;
+operations only on held/charged totals and state; attempts only on state, dispatch/
+settlement timestamps, validated usage and charged amount. IDs, scope, kind, price
+version, fingerprints and initial reservation bound cannot be updated. Price/limit
+records are SELECT-only to the executor. Cross-day hold records are immutable
+allocations whose release is accounted transactionally, never deleted at runtime.
+All function state changes and counter deltas are one transaction, with nonnegative
+CHECK constraints. Only migration/operator credentials can create price versions.
+Revoke default PUBLIC EXECUTE in the same migration transaction, then grant EXECUTE
+only to the two runtime logins. Fix search_path to pg_catalog with all application
+objects schema-qualified; no dynamic SQL, caller-selected table/role names, default
+argument overloads or writable-schema resolution. Validate `session_user` against
+the two actual login roles (not `current_user`, which is the executor in the function),
+and bind each reservation to caller role and a validated transaction scope digest.
+Validate owner context for indexing/Playground and visitor context for public chat;
+these are trusted FastAPI assertions, not SQL-side Supabase JWT verification.
+Do not make the executor an admin, table owner or RLS bypass role.
+
+Only a migration/operator-managed price/limit record supplies allowed model identity,
+unit prices and ceilings. Runtimes cannot change prices, caps or manufacture negative
+charges. Functions return reservation outcome/ID, not cross-owner reservation lists.
+Caller usage is trusted adapter-observed usage: this boundary prevents accidental
+races/direct counter manipulation, not malicious application falsification of bills.
+This narrowly privileged function design is conditionally approved for P4-02 design;
+it does not grant general SECURITY DEFINER access to tenant data. Applying any
+migration still requires separate execution authorization.
+
+Reservation rules:
+
+1. Reserve before every provider dispatch, commit reservation separately from domain
+   work, and fail closed on unknown/unverified model pricing or unavailable ledger.
+   Index batches share a lifetime $0.10 operation envelope. Query embedding and
+   generation share a $0.01 message envelope. All three callers share $1/UTC day.
+   Caps are initial policy values conditional on pricing verification, not verified
+   invoice estimates. A free candidate also needs verified quota/availability.
+2. Lock global day buckets in date order, then operation, then attempt. Atomically
+   require charged plus outstanding reservations plus new upper bound <= every
+   applicable cap. Integer micro-USD arithmetic rounds costs up. Unique
+   operation/attempt keys prevent double reservation or duplicate dispatch claims.
+3. The upper bound uses verified billable input and maximum output/reasoning pricing,
+   not just visible answer tokens. Adapter guards still apply. No caller can dispatch
+   more inputs/output than reserved. Unknown charging semantics block enablement.
+4. Mark dispatched durably before sending. No DB transaction spans HTTP. Settle once
+   against validated usage, releasing only proven surplus. Missing usage, timeout,
+   crash or uncertain send retains the full reservation; lease expiry does not refund
+   or automatically retry. Only never-dispatched attempts can be canceled automatically.
+   Unexpected cost above reserve trips the AI kill switch and needs operator review.
+5. A reservation may not cross midnight unaccounted. Before dispatch, atomically
+   cover every UTC day touched by the bounded request deadline (normally current
+   day, at most next day). Hold that bound on each covered day; conservatively keep
+   settled/uncertain cost on both for crossing calls. Do not release an old-day hold
+   to create new-day credit for an in-flight request. This deliberately overcounts
+   rather than promising precise provider billing-day alignment.
+6. Recovery never edits a global balance directly. An operator reconciliation path
+   is separate from runtime HTTP, audits reservation IDs/reasons without content and
+   requires evidence before release. Crash between reservation and domain update
+   can waste budget but cannot grant free calls. All existing indexing/Playground
+   dispatches must adopt this boundary before public enablement; old provider paths
+   and validation scripts must not run alongside it as unaccounted production work.
+
+Provider-side project caps supplement this estimate; external use of the same key,
+price changes and provider charging rules prevent an application ledger from being
+an absolute billing guarantee. No price verification or provider call occurred here.
+
+#### Publication, cleanup and concurrency invariants
+
+- Snapshot includes frozen behavior/name/colors/fallback, calibrated retrieval policy,
+  embedding identity, complete source/index manifest and version. Secrets remain
+  deployment settings. No snapshot/source UPDATE/DELETE grants; inserts are part of
+  one publish transaction and constraints reject cross-owner/assistant references.
+  A sealing guard validates complete references at activation and prohibits further
+  source INSERTs into any snapshot that has ever activated, not just the current one.
+  No partially assembled snapshot may be externally visible or committed as active.
+- Publish checks expected fingerprint/version under the existing assistant-row lock,
+  then locks publication row, then source files in UUID order. Draft attachment,
+  index activation and cleanup claims must respect the same parent-first order.
+  Compute the fingerprint from saved configuration plus exact current file/extraction/
+  ready-index identity; no client-supplied index. Snapshot, references, idempotency
+  result and active pointer commit together. Zero files -> null index + local fallback;
+  any processing/failed attachment -> conflict, never partial knowledge publication.
+- Public finalization uses a transaction-level advisory lock derived from internal
+  assistant UUID; publisher obtains the same lock before pointer change. Public code
+  needs no UPDATE privilege on publication just to lock it. After lock acquisition,
+  re-read active pointer and token expiry before persisting response. Do not hold this
+  lock across provider calls. Publishers take advisory lock before parent-row locks;
+  finalizers take advisory lock before turn-row locks. Hash collision only serializes
+  unrelated assistants, never authorizes them. All pointer-changing paths, including
+  operator rollback, follow this protocol. An HTTP reply may arrive after a later
+  publish; the guarantee is the atomic finalization point, not network delivery time.
+- A version change yields 409 and records a version-rejected attempt without the
+  generated answer. Cost still settles; no automatic AI retry. Token expiry during
+  a call yields uniform 404 and no answer; attempted history remains pending for
+  operator reconciliation if runtime RLS no longer permits finalization.
+- Retained inactive snapshots protect files, extracted text, indexes and chunks too.
+  Cleanup claims lock the parent/files and recheck all retained references before
+  any external deletion. Publish rejects cleanup-claimed/missing artifacts. Extend
+  recovery's exact schema baseline and reference checks together; old tools continue
+  failing closed. No snapshot garbage collection in this phase.
+- Public replay requires valid unexpired capability and same request-body digest.
+  A completed turn from an older public version returns 409 rather than leaking an
+  obsolete answer through replay. Owner history retains that original answer/version.
+  Same-version replay returns the committed response; pending/uncertain is 409.
+
+#### API and browser refinements
+
+The route tables above are the P4-01 contract. Publish responses also include `version`
+for already-active identical content (200). Conversation creation and message endpoints
+use `X-Visitor-Token` for subsequent requests, never owner Authorization headers.
+Request IDs are UUIDs, idempotency keys bounded to 128 ASCII characters, unknown JSON
+fields rejected. History default/max limits are 20/100 with stable timestamp+UUID
+cursors. A history turn projects user/assistant messages with timestamps; failed
+turns show user input and safe status, never fabricated assistant output.
+
+Serve loader and iframe from the application public asset origin, no separate service.
+Allow framing only for the widget route; never relax owner-app framing headers.
+The loader creates the isolated frame; tokens and chat text never cross postMessage.
+Only bounded resize/open/close messages are accepted after source/origin validation.
+Widget HTTP stays same-origin to its API where deployed; any development CORS list
+is explicit, with no credentialed wildcard. Render plain text, validate colors,
+support keyboard/mobile/RTL, no HTML injection, automatic AI retries or silent token
+renewal. Expired conversation offers an explicit new conversation action.
+
+Initial operational guard proposal: 16 KiB JSON body maximum, existing 1,000-byte
+question guard, 30 requests/minute/IP/public-assistant shared across public dynamic
+routes, at most one in-flight AI turn/conversation, two/assistant and four/global.
+These concurrency slots cover indexing and Playground too to prevent competing
+provider overload. Reject with 429 before provider dispatch; bound limiter storage,
+expire inactive keys, reject new keys at capacity rather than evicting active limits.
+One process/worker; trusted proxy addresses explicitly configured, otherwise use
+socket peer. A 30-second whole-turn deadline includes DB/embedding/generation and
+uses remaining time with existing provider ceilings, never two unconstrained waits.
+Numerical operational guard values require load/hosting verification before enabling
+public chat; durable cost controls remain effective across process restarts.
+
+#### Acceptance evidence and approval gates
+
+| Test group required in later tasks | Observable assertion | SPEC traceability |
+| --- | --- | --- |
+| P4-C01 publishing | No Playground use; zero-file fallback publishes; processing/failed blocks; concurrent edits/publishes conflict without partial activation | AC-010/015/016/018 |
+| P4-C02 snapshot retention | Draft remove/reindex/config edit does not alter public results; cleanup cannot claim referenced sources; rollback preserves exact knowledge/config | AC-006/007/015/016 |
+| P4-C03 actual DB roles | Public login cannot read drafts/text/files or write indexes/snapshots; absent/invalid scope denied; owner A cannot read B history; grants/connection reuse tested | AC-002/013/014/015 |
+| P4-C04 capability and history | 24-hour expiry, wrong conversation/token, tokenless access fail; timestamps and owner history retained; pending/completed/replay/version-change behavior | AC-012/013/014/016 |
+| P4-C05 cost and faults | Mixed indexing/Playground/public reservations race at cap; exact-boundary/UTC rollover/duplicate settlement/crash/unknown billing all fail closed; no forbidden provider dispatch | AC-008/012/017 safety support |
+| P4-C06 responses | Exact fallback with zero knowledge/no matches; no generation without evidence; provider error not fallback; raw citations/filenames/excerpts absent from public payload | AC-012/015/016/017 |
+| P4-C07 widget | Separate-origin host, no owner session, copied snippet works, iframe origin/source checks, plain text, expired session, RTL/mobile and no model controls | AC-011/012/018; NFR-003/004 |
+
+These are planned tests, not executed evidence. Security tests require real PostgreSQL
+under both runtime logins; skipped tests cannot close the release gate. Mocked provider
+tests prove guards, not answer quality. Source disclosure restriction refers to raw
+metadata/excerpts in payloads; grounded answer prose necessarily conveys published
+knowledge and cannot guarantee that the model never mentions a source name.
+
+The human conditionally approved this narrow function-owner design and its safeguards;
+the final matrix is now recorded in ADR addenda. No security architecture choice
+remains unresolved for P4-01. P4-02 implementation requires its own authorization.
+Provider price/quota verification, deployment origins/proxy chain, real role tests and
+request-deadline feasibility remain implementation or enablement gates, not reasons
+to invent values or modify live settings. No implementation phase is complete, so no
+learning report is asserted by P4-01.
+
+Security references: [PostgreSQL row security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
+and [function security](https://www.postgresql.org/docs/current/sql-createfunction.html).
+Policies filter rows in addition to privileges; function execution identity and a
+fixed safe search path require explicit treatment. This design never relies on
+FORCE RLS to constrain a superuser or BYPASSRLS credential.
 
 ## Knowledge processing contract
 
@@ -752,3 +1189,90 @@ was sent. This diagnostic did not access or modify Supabase.
 The developer reported a bounded calibration against the existing ready index using four known-answer and three unknown-answer questions. It recommended `0.30347`, which is now configured in the local `backend/.env`. The local environment file and index-specific calibration artifacts are excluded from version control; this record contains no document text or personal data. Focused offline retrieval and calibration tests passed (27 passed) after the local setting was applied. No provider call, reindex, or database change occurred during that configuration update. This threshold is specific to the calibrated data and is not a universal relevance guarantee.
 
 Playground status remains unresolved: the latest reported request failed with `generation_input_limit`. Diagnose and verify that error before accepting the Playground or closing Phase 3.
+
+### Phase 4 - P4-04 local public chat implementation (2026-10-23)
+
+The local FastAPI implementation now exposes the approved public assistant,
+conversation-creation, and visitor-message contracts. Public access is disabled by
+default (`PUBLIC_CHAT_ENABLED=false`). Enabling the bounded demo requires an
+operator-provisioned `PUBLIC_DATABASE_URL` for the restricted
+`assistant_public_runtime` role, complete existing server-side AI configuration,
+and one or two tester secrets represented by SHA-256 digests in
+`PUBLIC_DEMO_TOKEN_SHA256`. Each request must carry the tester's `X-Demo-Access`
+credential. Conversation creation returns a random visitor capability once;
+subsequent messages send it in `X-Visitor-Token`. Only its SHA-256 digest is stored.
+Do not place either token in a URL, logs, browser storage, source control, or the
+widget snippet. No actual demo tokens or credentials are recorded here.
+
+The public database connection is separate and startup validation checks the
+restricted role and denied draft/accounting privileges. Resolution reads only the
+active immutable published snapshot. Query retrieval is pinned to that snapshot's
+stored index/source manifest; draft assistants, current draft files, and owner
+history are not used. Internal citation membership and excerpts are validated,
+while public responses omit citations and private source metadata. Turns persist a
+pending record before provider I/O, use per-conversation request IDs for idempotency,
+and are finalized under the same assistant publication advisory lock used by the
+publisher. If the active snapshot changed during generation, the generated text is
+discarded and the durable turn is marked `version_rejected`. Provider outcomes that
+cannot safely be replayed remain terminal/uncertain; there is no automatic AI retry.
+
+The demo uses bounded process-local rate and concurrency controls (30 requests per
+minute per source-IP/public-assistant pair, at most two in-flight requests per
+public assistant and four public requests globally per application process), a
+16-KiB POST body limit, and the existing embedding/generation guards plus a
+30-second API deadline. Client IP comes from the direct ASGI peer; forwarded headers
+are not trusted. The limiter is intentionally single-process and is not a durable
+cross-worker control. The shared accounting schema is retained but its reservation
+functions are not called in this tester-only demo. These controls do not provide a
+monetary ceiling. Before unrestricted public launch, shared budget reservations and
+settlement, verified pricing/quota, cross-worker rate/concurrency controls, and a
+separate authorized live security/quality review are mandatory. The public API is
+not a launch-ready widget, and no widget or owner history UI was implemented in
+P4-04.
+
+Local verification: 19 focused offline API/service tests passed. All 10 tests in the
+P4 PostgreSQL integration module passed against a disposable PostgreSQL 16/pgvector
+database, exercising the restricted public role's RLS/grants, draft and accounting
+denial, fallback-only chat, capability-backed conversation, idempotent replay, and
+idempotency conflict, indexed snapshot retrieval without private citation projection,
+and publish-during-generation rejection. The full offline backend suite passed 442
+tests with 38 opt-in PostgreSQL tests skipped; compilation passed. No live Supabase
+resource or AI provider was used.
+
+### Phase 4 — P4-05 owner conversation history API
+
+P4-05 adds authenticated owner-only read endpoints over the existing
+`visitor_conversations` and `visitor_turns` records. It does not add a visitor
+history endpoint, new persistence tables, or history UI.
+
+| Route | Request | Success | Failure |
+| --- | --- | --- | --- |
+| GET `/assistants/{assistant_id}/conversations?limit=20&cursor=...` | Verified owner bearer session; limit 1–100; optional stable cursor | Page of conversation ID, created/last-activity timestamps, safe latest status/outcome, latest published version, and next cursor | 401; uniform 404 for unknown or other-owner assistant; 422 invalid limit/cursor; generic 503 on persistence failure |
+| GET `/assistants/{assistant_id}/conversations/{conversation_id}?limit=20&cursor=...` | Verified owner bearer session; limit 1–100; optional stable turn cursor | Ordered turns containing user and saved assistant messages, timestamps, safe status/outcome, immutable published version, and next cursor | 401; uniform 404 for unknown or cross-owner/cross-assistant conversation; 422 invalid limit/cursor; generic 503 on persistence failure |
+
+Both routes derive owner identity only from the validated Supabase session and run
+with the existing transaction-local owner context. The service also filters on
+`owner_id` and `assistant_id`; forced RLS remains an independent boundary. The
+cursor encodes the stable timestamp-plus-UUID ordering tuple and is not an
+authorization credential. Conversation pages order newest first; turn pages order
+oldest first. Default and maximum page sizes are 20 and 100. Conversation summaries
+read only the newest associated turn and do not count an unbounded conversation on
+every list request.
+
+Detail exposes only saved user/assistant text, event timestamps, safe state
+(`pending`, `completed`, `fallback`, `failed`, `uncertain`, or `version_changed`),
+validated outcome (`grounded`/`fallback`), and published version number. Unfinished
+or failed turns show the visitor's submitted text and a safe status, never an
+assistant answer that was not durably saved. Unknown/inconsistent persistence states
+fail closed as `failed`. The API never selects or returns visitor-token hashes,
+request/input hashes, internal error codes, owner/publication/snapshot IDs, prompts,
+credentials, or provider metadata. Cross-owner and cross-conversation access has a
+uniform 404 response. Persistence failures return a generic 503 without exception
+details. Idempotency remains the existing per-conversation unique request ID; this
+API is read-only and does not retry or alter visitor turns.
+
+PostgreSQL verification also confirms history retains the version for each original
+turn after republishing: old conversations remain associated with their original
+snapshot, while new conversations show the newly active version. No migration was
+required. P4-05 has local tests only and awaits human review; its successful local
+verification is recorded in PLAN-001.
