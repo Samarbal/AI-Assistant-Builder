@@ -35,6 +35,7 @@ export function AssistantLayout() {
     <NavLink to="configuration" className={({ isActive }) => isActive ? styles.activeTab : ''}>Configuration</NavLink>
     <NavLink to="knowledge" className={({ isActive }) => isActive ? styles.activeTab : ''}>Knowledge</NavLink>
     <NavLink to="playground" className={({ isActive }) => isActive ? styles.activeTab : ''}>Playground</NavLink>
-    <button disabled>Publish <Badge>Planned</Badge></button>
+    <NavLink to="publish" className={({ isActive }) => isActive ? styles.activeTab : ''}>Publish</NavLink>
+    <NavLink to="conversations" className={({ isActive }) => isActive ? styles.activeTab : ''}>Conversations</NavLink>
   </nav><Outlet /></div>
 }

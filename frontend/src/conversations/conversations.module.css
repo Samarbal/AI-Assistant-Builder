@@ -1,0 +1,16 @@
+.page { display:flex; flex-direction:column; gap:20px; max-width:1000px; }
+.heading { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+.heading p { margin-top:6px; }
+.list { padding:0; overflow:hidden; }
+.list ul,.turns { list-style:none; margin:0; padding:0; }
+.list li+li { border-top:1px solid var(--color-border); }
+.list a { color:var(--color-ink); display:flex; justify-content:space-between; align-items:center; gap:16px; padding:16px 20px; min-height:70px; }
+.list a:hover { background:var(--color-primary-soft); text-decoration:none; }
+.list a span:first-child { display:flex; flex-direction:column; }
+.list small,.meta,.role { color:var(--color-muted); font-size:12px; }
+.paging { display:flex; gap:8px; }
+.turns { display:flex; flex-direction:column; gap:12px; }
+.turn { display:flex; flex-direction:column; align-items:flex-start; gap:10px; }
+.turn p { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--color-ink); }
+.turn .role { color:var(--color-muted); font-size:12px; }
+@media(max-width:650px) { .heading { align-items:flex-start; flex-direction:column; } .list a { align-items:flex-start; flex-direction:column; } }

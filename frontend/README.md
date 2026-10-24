@@ -173,3 +173,26 @@ walkthrough, see [UI-05 learning notes](../docs/learning/UI-05-EXPLAINED.md).
 ## UI-06 review
 
 Local review and checks passed. See [review and live smoke-test procedure](../docs/ai-sdlc/contracts/UI-06-REVIEW.md). Live frontend integration remains unverified by the automated checks. Brand colors use native color pickers; choose a swatch and save the draft.
+
+## P4-06 publishing, history, and widget
+
+Open an assistant and use its Publish or Conversations tab. Publishing sends the
+current server fingerprint and published version for conflict detection. The embed
+snippet contains only the public assistant ID. Visitor history uses owner-authenticated,
+bounded cursor pages and never returns visitor tokens or private citation metadata.
+
+The frontend build serves `public/widget.js` and the public `/widget` iframe route.
+For local development, Vite proxies `/public/*` to FastAPI. In a split-origin
+deployment, set `VITE_PUBLIC_API_ORIGIN` to the public FastAPI origin and set the
+backend `WIDGET_ASSET_ORIGIN` to the exact origin serving this frontend. FastAPI
+then permits only that origin on public chat routes, without credentialed CORS.
+The customer website must use a different origin from the frontend/widget asset
+host; the loader refuses same-origin embedding so the host cannot inspect the
+tester-only iframe.
+Public chat remains disabled unless the server demo gate is explicitly enabled.
+Approved testers enter the demo code inside the iframe; it and the visitor token
+remain in frame memory only.
+
+Focused checks: `npm.cmd test -- tests/publishing.test.tsx tests/widget.test.tsx`,
+`npm.cmd run test:browser -- tests/browser/publishing-widget.spec.ts`,
+`npm.cmd run lint`, `npm.cmd run typecheck`, and `npm.cmd run build`.

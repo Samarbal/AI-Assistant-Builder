@@ -1,0 +1,13 @@
+.page { display:flex; flex-direction:column; gap:20px; max-width:980px; }
+.heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.heading p { margin-top:6px; }
+.card { display:flex; flex-direction:column; align-items:flex-start; gap:16px; }
+.card dl { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; width:100%; }
+.card dl div { border:1px solid var(--color-border); border-radius:var(--radius-control); padding:14px; }
+.card dt { color:var(--color-muted); font-size:12px; }
+.card dd { margin:4px 0 0; font-weight:600; }
+.actions,.links { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.card textarea { width:100%; resize:vertical; padding:12px; border:1px solid var(--color-border); border-radius:var(--radius-control); color:var(--color-ink); background:#f8f8fb; font:12px/1.5 ui-monospace,monospace; }
+.inline { border:0; padding:0; color:var(--color-primary-hover); text-decoration:underline; background:transparent; font:inherit; }
+.srOnly { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+@media(max-width:700px) { .heading { align-items:flex-start; flex-direction:column; } .card dl { grid-template-columns:1fr; } }
