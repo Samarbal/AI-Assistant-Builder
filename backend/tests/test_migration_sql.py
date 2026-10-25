@@ -121,3 +121,39 @@ def test_index_batch_idempotency_grant_is_narrow_and_requires_forced_rls(monkeyp
     assert "GRANT DELETE" not in sql
     assert "DISABLE ROW LEVEL SECURITY" not in sql
     assert "DROP TABLE" not in sql
+
+
+def test_publication_budget_function_ownership_transfer_is_temporary_and_closed(monkeypatch):
+    # Offline SQL contract: the local non-superuser PostgreSQL run separately
+    # verifies that the privilege sequence is accepted by PostgreSQL.
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", "postgresql+psycopg://offline:placeholder@localhost/offline")
+    root = Path(__file__).resolve().parents[1]
+    output = StringIO()
+    config = Config(str(root / 'alembic.ini'), output_buffer=output)
+    config.set_main_option('script_location', str(root / 'alembic'))
+    command.upgrade(config, '0005_batch_idem_grant:0006_publication_budget', sql=True)
+    sql = output.getvalue()
+
+    membership_grant = sql.index("GRANT assistant_budget_executor TO")
+    schema_create = sql.index("GRANT CREATE ON SCHEMA ai_accounting TO assistant_budget_executor")
+    first_owner_change = sql.index("EXECUTE format('ALTER FUNCTION ai_accounting.%s OWNER TO assistant_budget_executor'")
+    assert membership_grant < first_owner_change
+    assert schema_create < first_owner_change
+    assert "EXCEPTION WHEN OTHERS THEN" in sql
+    assert "REVOKE CREATE ON SCHEMA ai_accounting FROM assistant_budget_executor" in sql
+    assert "REVOKE assistant_budget_executor FROM" in sql
+
+    set_owner = sql.index("SET ROLE assistant_budget_executor")
+    reset_owner = sql.index("RESET ROLE", set_owner)
+    public_revoke = sql.index("REVOKE ALL ON FUNCTION ai_accounting.reserve_attempt", set_owner)
+    allowed_grant = sql.index("GRANT EXECUTE ON FUNCTION ai_accounting.reserve_attempt", set_owner)
+    assert first_owner_change < set_owner < public_revoke < allowed_grant < reset_owner
+    assert "Temporary accounting-schema CREATE privilege was not revoked" in sql
+    assert "Unexpected effective membership on assistant_budget_executor" in sql
+    assert "Budget function EXECUTE grants differ from the approved runtime boundary" in sql
+    assert "NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls" in sql
+    assert 'INSERT INTO public.assistants' not in sql
+    assert 'UPDATE public.assistants' not in sql
+    assert 'DELETE FROM public.assistants' not in sql
+    assert 'DROP TABLE public.assistants' not in sql
+    assert sql.count('COMMIT;') == 1

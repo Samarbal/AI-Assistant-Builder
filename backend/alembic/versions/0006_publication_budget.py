@@ -541,13 +541,91 @@ BEGIN
  END LOOP;
  RETURN true; END $$;
 """)
-    # SECURITY DEFINER owner is a NOLOGIN role; remove default EXECUTE and expose only fixed APIs.
+    # PostgreSQL requires the migration principal to be able to SET ROLE to the
+    # new owner, and the new owner to have CREATE on the function schema. Keep
+    # both grants scoped to this transfer and revoke them on success or failure.
+    # The exception subtransaction also rolls back any partial ownership changes.
+    op.execute("""
+DO $$ DECLARE function_signature text; BEGIN
+  BEGIN
+    EXECUTE format('GRANT assistant_budget_executor TO %I', current_user);
+    GRANT CREATE ON SCHEMA ai_accounting TO assistant_budget_executor;
+    FOREACH function_signature IN ARRAY ARRAY[
+      'reserve_attempt(uuid,uuid,text,text,uuid,bigint,bigint,text)',
+      'mark_dispatched(uuid)',
+      'settle_attempt(uuid,bigint,bigint)',
+      'cancel_undispatched(uuid)'
+    ] LOOP
+      EXECUTE format('ALTER FUNCTION ai_accounting.%s OWNER TO assistant_budget_executor', function_signature);
+    END LOOP;
+  EXCEPTION WHEN OTHERS THEN
+    EXECUTE 'REVOKE CREATE ON SCHEMA ai_accounting FROM assistant_budget_executor';
+    EXECUTE format('REVOKE assistant_budget_executor FROM %I', current_user);
+    RAISE;
+  END;
+END $$
+""")
+    # Only the function owner may change the function ACL. Temporarily SET ROLE
+    # to the new owner, revoke PostgreSQL's default PUBLIC EXECUTE, and grant
+    # EXECUTE only to the two approved runtime roles.
+    # Alembic runs this revision in one transaction; any failure here rolls back
+    # the ownership transfers, temporary grants, and SET ROLE state together.
+    op.execute("SET ROLE assistant_budget_executor")
     for function in (
         "reserve_attempt(uuid,uuid,text,text,uuid,bigint,bigint,text)",
         "mark_dispatched(uuid)", "settle_attempt(uuid,bigint,bigint)", "cancel_undispatched(uuid)"):
-        op.execute(f"ALTER FUNCTION ai_accounting.{function} OWNER TO assistant_budget_executor")
         op.execute(f"REVOKE ALL ON FUNCTION ai_accounting.{function} FROM PUBLIC")
         op.execute(f"GRANT EXECUTE ON FUNCTION ai_accounting.{function} TO assistant_runtime,assistant_public_runtime")
+    op.execute("RESET ROLE")
+    op.execute("""
+DO $$ BEGIN
+  REVOKE CREATE ON SCHEMA ai_accounting FROM assistant_budget_executor;
+  EXECUTE format('REVOKE assistant_budget_executor FROM %I', current_user);
+END $$
+""")
+    op.execute("""
+DO $$ BEGIN
+  -- PostgreSQL gives a CREATEROLE creator an ADMIN-only membership in roles it
+  -- creates. That grant has SET/INHERIT disabled and is not the temporary
+  -- membership used below. Permit only that inert creator membership; no other
+  -- role may inherit or SET ROLE to the executor.
+  IF EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid
+      JOIN pg_roles u ON u.oid=m.member
+      WHERE r.rolname='assistant_budget_executor'
+        AND (u.rolname <> current_user OR NOT m.admin_option OR m.inherit_option OR m.set_option))
+     OR EXISTS (SELECT FROM pg_auth_members m JOIN pg_roles u ON u.oid=m.member
+      WHERE u.rolname='assistant_budget_executor') THEN
+    RAISE EXCEPTION 'Unexpected effective membership on assistant_budget_executor';
+  END IF;
+  IF has_schema_privilege('assistant_budget_executor','ai_accounting','CREATE') THEN
+    RAISE EXCEPTION 'Temporary accounting-schema CREATE privilege was not revoked';
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='assistant_budget_executor'
+      AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls AND NOT rolinherit
+      AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication) THEN
+    RAISE EXCEPTION 'Budget executor role attributes differ from approved baseline';
+  END IF;
+  IF EXISTS (SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='ai_accounting'
+        AND p.proname IN ('reserve_attempt','mark_dispatched','settle_attempt','cancel_undispatched')
+        AND p.proowner <> 'assistant_budget_executor'::regrole) THEN
+    RAISE EXCEPTION 'A budget SECURITY DEFINER function has an unexpected owner';
+  END IF;
+  IF EXISTS (SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl
+      WHERE n.nspname='ai_accounting'
+        AND p.proname IN ('reserve_attempt','mark_dispatched','settle_attempt','cancel_undispatched')
+        AND acl.grantee=0 AND acl.privilege_type='EXECUTE')
+     OR EXISTS (SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      WHERE n.nspname='ai_accounting'
+        AND p.proname IN ('reserve_attempt','mark_dispatched','settle_attempt','cancel_undispatched')
+        AND (NOT has_function_privilege('assistant_runtime',p.oid,'EXECUTE')
+          OR NOT has_function_privilege('assistant_public_runtime',p.oid,'EXECUTE'))) THEN
+    RAISE EXCEPTION 'Budget function EXECUTE grants differ from the approved runtime boundary';
+  END IF;
+END $$
+""")
+    # Remove default EXECUTE on the non-definer trigger helpers as well.
     for function in ("guard_published_snapshot()", "validate_published_manifest()", "guard_published_source()", "guard_publication_pointer()", "guard_visitor_conversation()", "guard_visitor_turn()"):
         op.execute(f"REVOKE ALL ON FUNCTION public.{function} FROM PUBLIC,anon,authenticated,service_role,assistant_runtime,assistant_public_runtime")
 
